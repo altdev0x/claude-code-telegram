@@ -176,6 +176,7 @@ class ClaudeSDKManager:
                 allowed_tools=self.config.claude_allowed_tools,
                 disallowed_tools=self.config.claude_disallowed_tools,
                 cli_path=cli_path,
+                setting_sources=["project"],
                 sandbox={
                     "enabled": self.config.sandbox_enabled,
                     "autoAllowBashIfSandboxed": True,
@@ -198,6 +199,7 @@ class ClaudeSDKManager:
             # Resume previous session if we have a session_id
             if session_id and continue_session:
                 options.resume = session_id
+                options.continue_conversation = True
                 logger.info(
                     "Resuming previous session",
                     session_id=session_id,

@@ -237,16 +237,16 @@ class Settings(BaseSettings):
             return [int(uid) for uid in v]
         return v  # type: ignore[no-any-return]
 
-    @field_validator("claude_allowed_tools", mode="before")
+    @field_validator("claude_allowed_tools", "sandbox_excluded_commands", mode="before")
     @classmethod
-    def parse_claude_allowed_tools(cls, v: Any) -> Optional[List[str]]:
-        """Parse comma-separated tool names."""
+    def parse_str_list(cls, v: Any) -> Optional[List[str]]:
+        """Parse comma-separated string lists."""
         if v is None:
             return None
         if isinstance(v, str):
-            return [tool.strip() for tool in v.split(",") if tool.strip()]
+            return [item.strip() for item in v.split(",") if item.strip()]
         if isinstance(v, list):
-            return [str(tool) for tool in v]
+            return [str(item) for item in v]
         return v  # type: ignore[no-any-return]
 
     @field_validator("approved_directory")
