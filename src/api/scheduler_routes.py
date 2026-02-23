@@ -66,6 +66,13 @@ class RemoveJobResponse(BaseModel):
     status: str = "removed"
 
 
+class TriggerJobResponse(BaseModel):
+    """Response after manually triggering a job."""
+
+    job_id: str
+    status: str = "triggered"
+
+
 def create_scheduler_router(
     job_scheduler: Any,
     verify_token: Any,
@@ -139,6 +146,21 @@ def create_scheduler_router(
         """Remove a scheduled job and its execution history."""
         await job_scheduler.remove_job(job_id)
         return RemoveJobResponse(job_id=job_id)
+
+    @router.post("/jobs/{job_id}/trigger", response_model=TriggerJobResponse)
+    async def trigger_job(
+        job_id: str,
+        _: None = Depends(verify_token),
+    ) -> TriggerJobResponse:
+        """Manually trigger a job immediately."""
+        try:
+            await job_scheduler.trigger_now(job_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+        except Exception as e:
+            logger.exception("Failed to trigger job", job_id=job_id)
+            raise HTTPException(status_code=500, detail=str(e))
+        return TriggerJobResponse(job_id=job_id)
 
     @router.get("/jobs/{job_id}/history", response_model=JobHistoryResponse)
     async def job_history(

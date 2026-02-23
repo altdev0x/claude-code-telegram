@@ -248,6 +248,47 @@ class TestSchedulerDateTrigger:
         assert response.status_code == 422
 
 
+class TestSchedulerTrigger:
+    """Tests for POST /api/scheduler/jobs/{id}/trigger."""
+
+    def test_trigger_job_success(self) -> None:
+        """POST trigger returns 200 with status=triggered."""
+        scheduler = make_mock_scheduler()
+        scheduler.trigger_now = AsyncMock(return_value=True)
+        client, _ = make_client(scheduler=scheduler)
+
+        response = client.post(
+            "/api/scheduler/jobs/job-123/trigger",
+            headers=AUTH_HEADER,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == "job-123"
+        assert data["status"] == "triggered"
+        scheduler.trigger_now.assert_called_once_with("job-123")
+
+    def test_trigger_job_not_found(self) -> None:
+        """POST trigger returns 404 for nonexistent job."""
+        scheduler = make_mock_scheduler()
+        scheduler.trigger_now = AsyncMock(side_effect=ValueError("Job not found: nope"))
+        client, _ = make_client(scheduler=scheduler)
+
+        response = client.post(
+            "/api/scheduler/jobs/nope/trigger",
+            headers=AUTH_HEADER,
+        )
+
+        assert response.status_code == 404
+
+    def test_trigger_requires_auth(self) -> None:
+        """POST trigger without auth returns 401."""
+        client, _ = make_client()
+
+        response = client.post("/api/scheduler/jobs/job-123/trigger")
+        assert response.status_code == 401
+
+
 class TestSchedulerRoutesNotMounted:
     """When no scheduler is provided, routes are not mounted."""
 

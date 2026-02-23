@@ -1,4 +1,4 @@
-"""Tests for JobScheduler — job history, retention, session_mode, DateTrigger."""
+"""Tests for JobScheduler — job history, retention, session_mode, DateTrigger, trigger_now."""
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -445,3 +445,110 @@ class TestLoadJobsFromDB:
             assert job.kwargs["cron_expression"] == "0 9 * * *"
         finally:
             scheduler._scheduler.shutdown(wait=False)
+
+
+class TestGetJob:
+    """Test get_job lookup."""
+
+    async def test_get_job_returns_active_job(self, scheduler):
+        """get_job returns a dict for an active job."""
+        async with scheduler.db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO scheduled_jobs
+                (job_id, job_name, cron_expression, prompt,
+                 working_directory, is_active, target_chat_ids, created_by)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                ("job-g1", "getter", "0 9 * * *", "hello", "/tmp", "111,222", 42),
+            )
+            await conn.commit()
+
+        job = await scheduler.get_job("job-g1")
+        assert job is not None
+        assert job["job_name"] == "getter"
+        assert job["created_by"] == 42
+
+    async def test_get_job_returns_none_for_missing(self, scheduler):
+        """get_job returns None when job doesn't exist."""
+        assert await scheduler.get_job("nonexistent") is None
+
+    async def test_get_job_returns_none_for_inactive(self, scheduler):
+        """get_job returns None for soft-deleted jobs."""
+        async with scheduler.db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO scheduled_jobs
+                (job_id, job_name, cron_expression, prompt,
+                 working_directory, is_active)
+                VALUES (?, ?, ?, ?, ?, 0)
+                """,
+                ("job-inactive", "gone", "0 9 * * *", "hello", "/tmp"),
+            )
+            await conn.commit()
+
+        assert await scheduler.get_job("job-inactive") is None
+
+
+class TestTriggerNow:
+    """Test manual job triggering via trigger_now."""
+
+    async def test_trigger_publishes_event(self, scheduler, event_bus):
+        """trigger_now publishes a ScheduledEvent with correct fields."""
+        async with scheduler.db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO scheduled_jobs
+                (job_id, job_name, cron_expression, prompt,
+                 working_directory, is_active, target_chat_ids,
+                 session_mode, created_by, skill_name)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                """,
+                (
+                    "job-t1", "trigger-test", "0 9 * * *", "run tests",
+                    "/tmp/proj", "111,222", "resume", 42, None,
+                ),
+            )
+            await conn.commit()
+
+        published: list = []
+        event_bus.publish = AsyncMock(side_effect=lambda e: published.append(e))
+
+        result = await scheduler.trigger_now("job-t1")
+
+        assert result is True
+        assert len(published) == 1
+        evt = published[0]
+        assert evt.job_id == "job-t1"
+        assert evt.job_name == "trigger-test"
+        assert evt.prompt == "run tests"
+        assert evt.target_chat_ids == [111, 222]
+        assert evt.session_mode == "resume"
+        assert evt.created_by == 42
+        assert evt.cron_expression == "0 9 * * *"
+
+    async def test_trigger_nonexistent_raises(self, scheduler):
+        """trigger_now raises ValueError for missing jobs."""
+        with pytest.raises(ValueError, match="Job not found"):
+            await scheduler.trigger_now("no-such-job")
+
+    async def test_trigger_does_not_delete_date_job(self, scheduler, event_bus):
+        """trigger_now does NOT soft-delete one-time jobs."""
+        async with scheduler.db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO scheduled_jobs
+                (job_id, job_name, cron_expression, prompt,
+                 working_directory, is_active, trigger_type, run_date)
+                VALUES (?, ?, ?, ?, ?, 1, 'date', '2026-12-01T00:00:00')
+                """,
+                ("job-once-t", "once", "", "do it", "/tmp"),
+            )
+            await conn.commit()
+
+        event_bus.publish = AsyncMock()
+        await scheduler.trigger_now("job-once-t")
+
+        # Job should still be active
+        job = await scheduler.get_job("job-once-t")
+        assert job is not None

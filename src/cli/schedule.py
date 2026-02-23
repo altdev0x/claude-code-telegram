@@ -174,6 +174,14 @@ def remove_job(job_id: str) -> None:
     click.echo(f"Job {job_id} removed.")
 
 
+@schedule.command(name="trigger")
+@click.argument("job_id")
+def trigger_job(job_id: str) -> None:
+    """Manually trigger a job immediately."""
+    _request("POST", f"/api/scheduler/jobs/{job_id}/trigger")
+    click.echo(f"Job {job_id} triggered.")
+
+
 @schedule.command(name="history")
 @click.argument("job_id")
 def job_history(job_id: str) -> None:

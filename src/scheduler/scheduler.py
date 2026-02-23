@@ -167,6 +167,62 @@ class JobScheduler:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    async def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Look up a single active job by ID.
+
+        Returns:
+            Job dict or None if not found / inactive.
+        """
+        async with self.db_manager.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM scheduled_jobs WHERE job_id = ? AND is_active = 1",
+                (job_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def trigger_now(self, job_id: str) -> bool:
+        """Manually trigger a job immediately via the event bus.
+
+        Constructs and publishes a ScheduledEvent without going through
+        APScheduler, so one-time jobs are NOT soft-deleted.
+
+        Raises:
+            ValueError: If the job does not exist or is inactive.
+        """
+        job = await self.get_job(job_id)
+        if not job:
+            raise ValueError(f"Job not found: {job_id}")
+
+        chat_ids_str = job.get("target_chat_ids", "")
+        chat_ids = (
+            [int(x) for x in chat_ids_str.split(",") if x.strip()]
+            if isinstance(chat_ids_str, str) and chat_ids_str
+            else []
+        )
+
+        event = ScheduledEvent(
+            job_id=job_id,
+            job_name=job.get("job_name", ""),
+            prompt=job.get("prompt", ""),
+            working_directory=Path(job.get("working_directory", ".")),
+            target_chat_ids=chat_ids,
+            skill_name=job.get("skill_name"),
+            session_mode=job.get("session_mode", "isolated"),
+            created_by=job.get("created_by", 0),
+            cron_expression=job.get("cron_expression", ""),
+        )
+
+        logger.info(
+            "Manual job trigger",
+            job_id=job_id,
+            job_name=job.get("job_name"),
+            event_id=event.id,
+        )
+
+        await self.event_bus.publish(event)
+        return True
+
     async def record_job_run(
         self,
         job_id: str,
