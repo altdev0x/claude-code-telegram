@@ -117,6 +117,7 @@ class AgentHandler:
                 working_directory=working_dir,
                 user_id=self.default_user_id,
                 force_new=force_new,
+                ephemeral=True,
             )
 
             success = True

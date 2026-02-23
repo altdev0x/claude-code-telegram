@@ -171,6 +171,70 @@ class TestScheduleCommands:
         assert "OK" in result.output
         assert "0.0500" in result.output
 
+    @patch("urllib.request.urlopen")
+    def test_add_date_job(self, mock_urlopen: MagicMock) -> None:
+        """schedule add --at sends POST with trigger_type=date."""
+        mock_urlopen.return_value = _mock_urlopen(
+            {"job_id": "date-123", "status": "created"}
+        )
+
+        runner = CliRunner(env={"WEBHOOK_API_SECRET": "test"})
+        result = runner.invoke(
+            cli,
+            [
+                "schedule",
+                "add",
+                "--name",
+                "One-time task",
+                "--at",
+                "2026-12-01T09:00:00",
+                "--prompt",
+                "Do it once",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "date-123" in result.output
+
+        # Verify the payload sent
+        call_args = mock_urlopen.call_args
+        req = call_args[0][0]
+        payload = json.loads(req.data.decode())
+        assert payload["trigger_type"] == "date"
+        assert payload["run_date"] == "2026-12-01T09:00:00"
+        assert payload["cron_expression"] == ""
+
+    def test_add_job_requires_cron_or_at(self) -> None:
+        """schedule add without --cron or --at fails."""
+        runner = CliRunner(env={"WEBHOOK_API_SECRET": "test"})
+        result = runner.invoke(
+            cli,
+            ["schedule", "add", "--name", "test", "--prompt", "hello"],
+        )
+        assert result.exit_code != 0
+        assert "--cron or --at" in result.output
+
+    def test_add_job_rejects_both_cron_and_at(self) -> None:
+        """schedule add with both --cron and --at fails."""
+        runner = CliRunner(env={"WEBHOOK_API_SECRET": "test"})
+        result = runner.invoke(
+            cli,
+            [
+                "schedule",
+                "add",
+                "--name",
+                "test",
+                "--cron",
+                "0 9 * * *",
+                "--at",
+                "2026-12-01T09:00:00",
+                "--prompt",
+                "hello",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
     def test_missing_secret_shows_error(self) -> None:
         """schedule commands fail gracefully without WEBHOOK_API_SECRET."""
         runner = CliRunner(env={"WEBHOOK_API_SECRET": ""})

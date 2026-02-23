@@ -42,12 +42,18 @@ class ClaudeIntegration:
         session_id: Optional[str] = None,
         on_stream: Optional[Callable[[StreamUpdate], None]] = None,
         force_new: bool = False,
+        ephemeral: bool = False,
+        system_prompt_append: Optional[str] = None,
     ) -> ClaudeResponse:
         """Run Claude Code command with full integration.
 
         Acquires a per-user+directory lock so that concurrent calls
         (e.g. interactive message vs. scheduled job) are serialized
         and cannot collide on the same session.
+
+        When ``ephemeral`` is True the session manager is bypassed
+        entirely — no session entries are created or updated. This
+        prevents cron jobs from corrupting the user's active session.
         """
         lock_key = (user_id, str(working_directory))
         async with self._session_locks[lock_key]:
@@ -58,6 +64,8 @@ class ClaudeIntegration:
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
+                ephemeral=ephemeral,
+                system_prompt_append=system_prompt_append,
             )
 
     async def _run_command_locked(
@@ -68,6 +76,8 @@ class ClaudeIntegration:
         session_id: Optional[str] = None,
         on_stream: Optional[Callable[[StreamUpdate], None]] = None,
         force_new: bool = False,
+        ephemeral: bool = False,
+        system_prompt_append: Optional[str] = None,
     ) -> ClaudeResponse:
         """Inner run_command implementation, called while holding the session lock."""
         logger.info(
@@ -77,7 +87,21 @@ class ClaudeIntegration:
             session_id=session_id,
             prompt_length=len(prompt),
             force_new=force_new,
+            ephemeral=ephemeral,
         )
+
+        # Ephemeral mode: bypass session manager entirely.
+        # Used by cron jobs to avoid corrupting the user's active session
+        # (no get_or_create_session, no update_session).
+        if ephemeral:
+            return await self._run_ephemeral(
+                prompt=prompt,
+                working_directory=working_directory,
+                user_id=user_id,
+                on_stream=on_stream,
+                force_new=force_new,
+                system_prompt_append=system_prompt_append,
+            )
 
         # If no session_id provided, try to find an existing session for this
         # user+directory combination (auto-resume).
@@ -116,6 +140,7 @@ class ClaudeIntegration:
                     session_id=claude_session_id,
                     continue_session=should_continue,
                     stream_callback=on_stream,
+                    system_prompt_append=system_prompt_append,
                 )
             except Exception as resume_error:
                 # If resume failed (e.g., session expired/missing on Claude's side),
@@ -140,6 +165,7 @@ class ClaudeIntegration:
                         session_id=None,
                         continue_session=False,
                         stream_callback=on_stream,
+                        system_prompt_append=system_prompt_append,
                     )
                 else:
                     raise
@@ -176,6 +202,61 @@ class ClaudeIntegration:
             )
             raise
 
+    async def _run_ephemeral(
+        self,
+        prompt: str,
+        working_directory: Path,
+        user_id: int,
+        on_stream: Optional[Callable[[StreamUpdate], None]] = None,
+        force_new: bool = False,
+        system_prompt_append: Optional[str] = None,
+    ) -> ClaudeResponse:
+        """Execute a command without touching the session store.
+
+        Used by cron jobs so they never create, evict, or overwrite
+        session entries that belong to the interactive user.
+
+        For resume-mode cron (force_new=False), does a read-only lookup
+        via _find_resumable_session to find a session ID to resume.
+        """
+        # Read-only: find session to resume (if not force_new)
+        session_id_to_resume: Optional[str] = None
+        if not force_new:
+            existing = await self._find_resumable_session(user_id, working_directory)
+            if existing:
+                session_id_to_resume = existing.session_id
+
+        should_continue = bool(session_id_to_resume)
+
+        try:
+            response = await self._execute(
+                prompt=prompt,
+                working_directory=working_directory,
+                session_id=session_id_to_resume,
+                continue_session=should_continue,
+                stream_callback=on_stream,
+                system_prompt_append=system_prompt_append,
+            )
+        except Exception:
+            if should_continue:
+                # Resume failed — retry as fresh session
+                logger.warning(
+                    "Ephemeral session resume failed, retrying as fresh",
+                    failed_session_id=session_id_to_resume,
+                )
+                response = await self._execute(
+                    prompt=prompt,
+                    working_directory=working_directory,
+                    session_id=None,
+                    continue_session=False,
+                    stream_callback=on_stream,
+                    system_prompt_append=system_prompt_append,
+                )
+            else:
+                raise
+
+        return response
+
     async def _execute(
         self,
         prompt: str,
@@ -183,15 +264,19 @@ class ClaudeIntegration:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
+        system_prompt_append: Optional[str] = None,
     ) -> ClaudeResponse:
         """Execute command via SDK."""
-        return await self.sdk_manager.execute_command(
+        kwargs: Dict[str, Any] = dict(
             prompt=prompt,
             working_directory=working_directory,
             session_id=session_id,
             continue_session=continue_session,
             stream_callback=stream_callback,
         )
+        if system_prompt_append is not None:
+            kwargs["system_prompt_append"] = system_prompt_append
+        return await self.sdk_manager.execute_command(**kwargs)
 
     async def _find_resumable_session(
         self,

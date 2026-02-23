@@ -173,6 +173,81 @@ class TestSchedulerRoutesAuth:
         assert response.status_code == 500
 
 
+class TestSchedulerDateTrigger:
+    """Test date trigger support in scheduler routes."""
+
+    def test_add_date_job(self) -> None:
+        """POST with trigger_type=date + run_date succeeds."""
+        client, scheduler = make_client()
+
+        response = client.post(
+            "/api/scheduler/jobs",
+            json={
+                "job_name": "One-time task",
+                "trigger_type": "date",
+                "run_date": "2026-12-01T09:00:00",
+                "prompt": "Do something once",
+            },
+            headers=AUTH_HEADER,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "created"
+        call_kwargs = scheduler.add_job.call_args.kwargs
+        assert call_kwargs["trigger_type"] == "date"
+        assert call_kwargs["run_date"] == "2026-12-01T09:00:00"
+
+    def test_cron_without_expression_returns_422(self) -> None:
+        """POST with trigger_type=cron + empty expression returns 422."""
+        client, _ = make_client()
+
+        response = client.post(
+            "/api/scheduler/jobs",
+            json={
+                "job_name": "Bad cron",
+                "trigger_type": "cron",
+                "cron_expression": "",
+                "prompt": "hello",
+            },
+            headers=AUTH_HEADER,
+        )
+
+        assert response.status_code == 422
+
+    def test_date_without_run_date_returns_422(self) -> None:
+        """POST with trigger_type=date + no run_date returns 422."""
+        client, _ = make_client()
+
+        response = client.post(
+            "/api/scheduler/jobs",
+            json={
+                "job_name": "Bad date",
+                "trigger_type": "date",
+                "prompt": "hello",
+            },
+            headers=AUTH_HEADER,
+        )
+
+        assert response.status_code == 422
+
+    def test_invalid_trigger_type_returns_422(self) -> None:
+        """POST with invalid trigger_type returns 422."""
+        client, _ = make_client()
+
+        response = client.post(
+            "/api/scheduler/jobs",
+            json={
+                "job_name": "Bad type",
+                "trigger_type": "interval",
+                "cron_expression": "0 * * * *",
+                "prompt": "hello",
+            },
+            headers=AUTH_HEADER,
+        )
+
+        assert response.status_code == 422
+
+
 class TestSchedulerRoutesNotMounted:
     """When no scheduler is provided, routes are not mounted."""
 

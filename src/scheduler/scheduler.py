@@ -1,10 +1,10 @@
-"""Job scheduler for recurring agent tasks.
+"""Job scheduler for recurring and one-time agent tasks.
 
 Wraps APScheduler's AsyncIOScheduler and publishes ScheduledEvents
 to the event bus when jobs fire.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +13,7 @@ from apscheduler.schedulers.asyncio import (
     AsyncIOScheduler,  # type: ignore[import-untyped]
 )
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
+from apscheduler.triggers.date import DateTrigger  # type: ignore[import-untyped]
 
 from ..events.bus import EventBus
 from ..events.types import ScheduledEvent
@@ -49,19 +50,22 @@ class JobScheduler:
     async def add_job(
         self,
         job_name: str,
-        cron_expression: str,
-        prompt: str,
+        cron_expression: str = "",
+        prompt: str = "",
         target_chat_ids: Optional[List[int]] = None,
         working_directory: Optional[Path] = None,
         skill_name: Optional[str] = None,
         created_by: int = 0,
         session_mode: str = "isolated",
+        trigger_type: str = "cron",
+        run_date: Optional[str] = None,
     ) -> str:
         """Add a new scheduled job.
 
         Args:
             job_name: Human-readable job name.
             cron_expression: Cron-style schedule (e.g. "0 9 * * 1-5").
+                Required for trigger_type="cron".
             prompt: The prompt to send to Claude when the job fires.
             target_chat_ids: Telegram chat IDs to send the response to.
             working_directory: Working directory for Claude execution.
@@ -69,28 +73,51 @@ class JobScheduler:
             created_by: Telegram user ID of the creator.
             session_mode: "isolated" (fresh session) or "resume" (continue
                           the user's most recent session for the directory).
+            trigger_type: "cron" for recurring or "date" for one-time.
+            run_date: ISO 8601 datetime for date triggers.
 
         Returns:
             The job ID.
         """
         if session_mode not in ("isolated", "resume"):
             raise ValueError(f"Invalid session_mode: {session_mode!r}")
+        if trigger_type not in ("cron", "date"):
+            raise ValueError(f"Invalid trigger_type: {trigger_type!r}")
+        if trigger_type == "cron" and not cron_expression:
+            raise ValueError("cron_expression is required for trigger_type='cron'")
+        if trigger_type == "date" and not run_date:
+            raise ValueError("run_date is required for trigger_type='date'")
 
-        trigger = CronTrigger.from_crontab(cron_expression)
+        if trigger_type == "cron":
+            trigger = CronTrigger.from_crontab(cron_expression)
+        else:
+            trigger = DateTrigger(run_date=run_date)
+
         work_dir = working_directory or self.default_working_directory
 
         job = self._scheduler.add_job(
             self._fire_event,
             trigger=trigger,
             kwargs={
+                "job_id": "",  # placeholder, back-filled below
                 "job_name": job_name,
                 "prompt": prompt,
                 "working_directory": str(work_dir),
                 "target_chat_ids": target_chat_ids or [],
                 "skill_name": skill_name,
                 "session_mode": session_mode,
+                "created_by": created_by,
+                "cron_expression": cron_expression,
             },
             name=job_name,
+        )
+
+        # Back-fill the auto-generated job_id into kwargs
+        job.modify(
+            kwargs={
+                **job.kwargs,
+                "job_id": job.id,
+            }
         )
 
         # Persist to database
@@ -104,13 +131,17 @@ class JobScheduler:
             skill_name=skill_name,
             created_by=created_by,
             session_mode=session_mode,
+            trigger_type=trigger_type,
+            run_date=run_date,
         )
 
         logger.info(
             "Scheduled job added",
             job_id=job.id,
             job_name=job_name,
-            cron=cron_expression,
+            trigger_type=trigger_type,
+            cron=cron_expression or None,
+            run_date=run_date or None,
             session_mode=session_mode,
         )
         return str(job.id)
@@ -199,31 +230,46 @@ class JobScheduler:
 
     async def _fire_event(
         self,
+        job_id: str,
         job_name: str,
         prompt: str,
         working_directory: str,
         target_chat_ids: List[int],
         skill_name: Optional[str],
         session_mode: str = "isolated",
+        created_by: int = 0,
+        cron_expression: str = "",
     ) -> None:
         """Called by APScheduler when a job triggers. Publishes a ScheduledEvent."""
         event = ScheduledEvent(
+            job_id=job_id,
             job_name=job_name,
             prompt=prompt,
             working_directory=Path(working_directory),
             target_chat_ids=target_chat_ids,
             skill_name=skill_name,
             session_mode=session_mode,
+            created_by=created_by,
+            cron_expression=cron_expression,
         )
 
         logger.info(
             "Scheduled job fired",
+            job_id=job_id,
             job_name=job_name,
             event_id=event.id,
             session_mode=session_mode,
         )
 
         await self.event_bus.publish(event)
+
+        # Soft-delete one-time (date) jobs after firing
+        if not cron_expression:
+            try:
+                await self._delete_job(job_id)
+                logger.info("One-time job soft-deleted after firing", job_id=job_id)
+            except Exception:
+                logger.exception("Failed to soft-delete one-time job", job_id=job_id)
 
     async def _load_jobs_from_db(self) -> None:
         """Load persisted jobs and re-register them with APScheduler."""
@@ -234,10 +280,35 @@ class JobScheduler:
                 )
                 rows = list(await cursor.fetchall())
 
+            loaded = 0
             for row in rows:
                 row_dict = dict(row)
                 try:
-                    trigger = CronTrigger.from_crontab(row_dict["cron_expression"])
+                    ttype = row_dict.get("trigger_type", "cron") or "cron"
+                    cron_expr = row_dict.get("cron_expression", "")
+                    run_date_str = row_dict.get("run_date")
+
+                    if ttype == "date":
+                        if not run_date_str:
+                            logger.warning(
+                                "Skipping date job with no run_date",
+                                job_id=row_dict["job_id"],
+                            )
+                            continue
+                        run_dt = datetime.fromisoformat(run_date_str)
+                        if run_dt.tzinfo is None:
+                            run_dt = run_dt.replace(tzinfo=UTC)
+                        if run_dt < datetime.now(UTC):
+                            logger.info(
+                                "Skipping expired date job",
+                                job_id=row_dict["job_id"],
+                                run_date=run_date_str,
+                            )
+                            await self._delete_job(row_dict["job_id"])
+                            continue
+                        trigger = DateTrigger(run_date=run_date_str)
+                    else:
+                        trigger = CronTrigger.from_crontab(cron_expr)
 
                     # Parse target_chat_ids from stored string
                     chat_ids_str = row_dict.get("target_chat_ids", "")
@@ -251,21 +322,26 @@ class JobScheduler:
                         self._fire_event,
                         trigger=trigger,
                         kwargs={
+                            "job_id": row_dict["job_id"],
                             "job_name": row_dict["job_name"],
                             "prompt": row_dict["prompt"],
                             "working_directory": row_dict["working_directory"],
                             "target_chat_ids": chat_ids,
                             "skill_name": row_dict.get("skill_name"),
                             "session_mode": row_dict.get("session_mode", "isolated"),
+                            "created_by": row_dict.get("created_by", 0),
+                            "cron_expression": cron_expr,
                         },
                         id=row_dict["job_id"],
                         name=row_dict["job_name"],
                         replace_existing=True,
                     )
+                    loaded += 1
                     logger.debug(
                         "Loaded scheduled job from DB",
                         job_id=row_dict["job_id"],
                         job_name=row_dict["job_name"],
+                        trigger_type=ttype,
                     )
                 except Exception:
                     logger.exception(
@@ -273,7 +349,7 @@ class JobScheduler:
                         job_id=row_dict.get("job_id"),
                     )
 
-            logger.info("Loaded scheduled jobs from database", count=len(rows))
+            logger.info("Loaded scheduled jobs from database", count=loaded)
         except Exception:
             # Table might not exist yet on first run
             logger.debug("No scheduled_jobs table found, starting fresh")
@@ -289,6 +365,8 @@ class JobScheduler:
         skill_name: Optional[str],
         created_by: int,
         session_mode: str = "isolated",
+        trigger_type: str = "cron",
+        run_date: Optional[str] = None,
     ) -> None:
         """Persist a job definition to the database."""
         chat_ids_str = ",".join(str(cid) for cid in target_chat_ids)
@@ -298,8 +376,8 @@ class JobScheduler:
                 INSERT OR REPLACE INTO scheduled_jobs
                 (job_id, job_name, cron_expression, prompt, target_chat_ids,
                  working_directory, skill_name, created_by, is_active,
-                 session_mode)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                 session_mode, trigger_type, run_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -311,6 +389,8 @@ class JobScheduler:
                     skill_name,
                     created_by,
                     session_mode,
+                    trigger_type,
+                    run_date,
                 ),
             )
             await conn.commit()

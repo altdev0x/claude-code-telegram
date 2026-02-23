@@ -193,6 +193,7 @@ class TestAgentHandler:
 
         call_kwargs = mock_claude.run_command.call_args.kwargs
         assert call_kwargs["force_new"] is True
+        assert call_kwargs["ephemeral"] is True
 
     async def test_resume_mode_no_force_new(
         self,
@@ -218,6 +219,7 @@ class TestAgentHandler:
 
         call_kwargs = mock_claude.run_command.call_args.kwargs
         assert call_kwargs["force_new"] is False
+        assert call_kwargs["ephemeral"] is True
 
     async def test_job_run_recorded_on_success(
         self,

@@ -4,10 +4,17 @@ Provides subcommands for service management and job scheduling.
 Running without a subcommand starts the bot (backward compatible).
 """
 
+from pathlib import Path
+
 import click
+from dotenv import load_dotenv
 
 from .schedule import schedule
 from .service import logs, restart, start, status, stop
+
+# Load project .env so CLI commands pick up WEBHOOK_API_SECRET, API_SERVER_PORT, etc.
+# Does not override variables already set in the environment.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
 @click.group(invoke_without_command=True)

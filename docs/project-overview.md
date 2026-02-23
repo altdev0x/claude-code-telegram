@@ -37,7 +37,7 @@ A Telegram bot that provides remote access to Claude Code, allowing developers t
 ### Event-Driven Platform
 - **Event Bus**: Async pub/sub system with typed event subscriptions
 - **Webhook API**: FastAPI server receiving GitHub and generic webhooks with signature verification
-- **Job Scheduler**: APScheduler cron jobs with persistent storage
+- **Job Scheduler**: APScheduler cron and one-time (DateTrigger) jobs with persistent storage, creator identity, agent context, and `[SILENT]` suppression
 - **Notifications**: Rate-limited Telegram delivery for agent responses
 
 ### Claude Code Integration
@@ -87,8 +87,10 @@ A Telegram bot that provides remote access to Claude Code, allowing developers t
    - GitHub HMAC-SHA256 + generic Bearer token auth
 
 8. **Scheduler** (`src/scheduler/`)
-   - APScheduler with cron triggers
+   - APScheduler with cron and DateTrigger (one-time) triggers
    - Persistent job storage in SQLite
+   - Creator identity propagation and cron agent context
+   - `[SILENT]` response suppression for quiet scheduled runs
 
 9. **Notifications** (`src/notifications/`)
    - Rate-limited Telegram delivery

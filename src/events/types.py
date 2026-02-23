@@ -40,6 +40,8 @@ class ScheduledEvent(Event):
     target_chat_ids: List[int] = field(default_factory=list)
     skill_name: Optional[str] = None
     session_mode: str = "isolated"
+    created_by: int = 0
+    cron_expression: str = ""
     source: str = "scheduler"
 
 

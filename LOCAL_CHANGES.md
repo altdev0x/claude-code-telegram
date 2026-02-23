@@ -110,3 +110,46 @@ completed_at, success, response_summary, cost, error_message.
 The `JobScheduler` is now initialized **before** the API server so the scheduler
 instance can be passed to `create_api_app()` for the scheduler routes. The
 `agent_handler.job_scheduler` reference is set after scheduler creation.
+
+## 10. Scheduler identity & DateTrigger
+
+**Files:** `src/scheduler/scheduler.py`, `src/events/types.py`, `src/events/handlers.py`, `src/storage/database.py`, `src/api/scheduler_routes.py`, `src/cli/schedule.py`
+
+Three enhancements and a bug fix:
+
+- **`created_by` propagation**: `ScheduledEvent` carries the Telegram user ID of the
+  job creator. `handle_scheduled()` uses it as `user_id` for `run_command()`, so jobs
+  execute in the creator's session scope instead of always user 0.
+- **`cron_expression` on event**: Passed through to handlers for context and to
+  distinguish cron from date jobs.
+- **DateTrigger (one-time jobs)**: New `trigger_type` (`cron`|`date`) and `run_date`
+  columns (migration #6). `add_job()` branches to `CronTrigger` or `DateTrigger`.
+  Date jobs are soft-deleted after firing. Expired date jobs are skipped on startup.
+  CLI gains `--at` flag (mutually exclusive with `--cron`). API `AddJobRequest` has
+  cross-field validation via `@model_validator`.
+- **Bug fix**: `_fire_event()` now sets `job_id` on `ScheduledEvent`. Previously
+  `job_id` was always `""`, so `record_job_run()` was silently skipped.
+
+## 11. Cron agent context (`system_prompt_append`)
+
+**Files:** `src/claude/facade.py`, `src/claude/sdk_integration.py`
+
+Added `system_prompt_append: Optional[str]` parameter threaded through the full
+`run_command()` → `_run_command_locked()` → `_execute()` → `execute_command()` chain.
+`_build_system_prompt()` accepts `extra_append` and includes it in the preset's
+`append` field. This allows callers (e.g. scheduled job handler) to inject per-turn
+context into the system prompt without modifying the base prompt.
+
+## 12. Cron result handling: boilerplate, [SILENT], system prompt
+
+**File:** `src/events/handlers.py`
+
+`handle_scheduled()` now:
+
+- **Cron system prompt**: Builds a context block with job name, schedule, working
+  directory, and the `[SILENT]` output contract. Passed via `system_prompt_append`.
+- **Boilerplate header**: Non-silent responses are prefixed with job name, agent
+  directory, and timestamp before publishing to `AgentResponseEvent`.
+- **`[SILENT]` suppression**: If the agent responds with exactly `[SILENT]`, no
+  `AgentResponseEvent` is published (no Telegram notification). The run is still
+  recorded with `response_summary="[SILENT]"`.

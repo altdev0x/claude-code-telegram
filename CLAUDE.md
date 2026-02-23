@@ -35,12 +35,18 @@ claude-telegram-bot start|stop|restart     # Manage systemd service
 claude-telegram-bot status                 # Show service status
 claude-telegram-bot logs [-f] [-n 50]      # View service logs
 
-claude-telegram-bot schedule add \         # Add a scheduled job
+claude-telegram-bot schedule add \         # Add a recurring cron job
   --name "Daily check" \
   --cron "0 9 * * 1-5" \
   --prompt "Run tests" \
   --chat-id 123456 \
   --session-mode isolated
+
+claude-telegram-bot schedule add \         # Add a one-time job
+  --name "Deploy reminder" \
+  --at "2026-03-01T09:00:00" \
+  --prompt "Remind about deploy" \
+  --chat-id 123456
 
 claude-telegram-bot schedule list          # List active jobs
 claude-telegram-bot schedule remove <id>   # Remove a job
@@ -102,7 +108,7 @@ context.bot_data["security_validator"]
 - `src/security/` -- Multi-provider auth (whitelist + token), input validators (with optional `disable_security_patterns`), rate limiter, audit logging
 - `src/events/` -- EventBus (async pub/sub), event types, AgentHandler (with job run recording), EventSecurityMiddleware
 - `src/api/` -- FastAPI webhook server (bound to `127.0.0.1`), GitHub HMAC-SHA256 + Bearer token auth, scheduler CRUD routes (`scheduler_routes.py`)
-- `src/scheduler/` -- APScheduler cron jobs, persistent storage in SQLite, job execution history with per-job retention (20 runs), session mode support (`isolated`/`resume`)
+- `src/scheduler/` -- APScheduler cron and one-time (DateTrigger) jobs, persistent storage in SQLite, job execution history with per-job retention (20 runs), session mode support (`isolated`/`resume`), creator identity propagation, cron agent context via `system_prompt_append`
 - `src/cli/` -- Click CLI: service lifecycle commands (wrapping systemd), schedule management commands (HTTP client to API)
 - `src/notifications/` -- NotificationService, rate-limited Telegram delivery
 

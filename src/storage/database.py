@@ -335,6 +335,14 @@ class DatabaseManager:
                     ON scheduled_job_runs(job_id, fired_at);
                 """,
             ),
+            (
+                6,
+                """
+                -- DateTrigger support for one-time scheduled jobs
+                ALTER TABLE scheduled_jobs ADD COLUMN trigger_type TEXT DEFAULT 'cron';
+                ALTER TABLE scheduled_jobs ADD COLUMN run_date TEXT;
+                """,
+            ),
         ]
 
     async def _init_pool(self):

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 logger = structlog.get_logger()
 
@@ -17,13 +17,26 @@ class AddJobRequest(BaseModel):
     """Request body for adding a scheduled job."""
 
     job_name: str
-    cron_expression: str
+    cron_expression: str = ""
     prompt: str
     target_chat_ids: List[int] = Field(default_factory=list)
     working_directory: Optional[str] = None
     skill_name: Optional[str] = None
     created_by: int = 0
     session_mode: str = "isolated"
+    trigger_type: str = "cron"
+    run_date: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_trigger(self) -> "AddJobRequest":
+        """Ensure cron/date fields are consistent with trigger_type."""
+        if self.trigger_type == "cron" and not self.cron_expression:
+            raise ValueError("cron_expression is required when trigger_type is 'cron'")
+        if self.trigger_type == "date" and not self.run_date:
+            raise ValueError("run_date is required when trigger_type is 'date'")
+        if self.trigger_type not in ("cron", "date"):
+            raise ValueError(f"Invalid trigger_type: {self.trigger_type!r}")
+        return self
 
 
 class AddJobResponse(BaseModel):
@@ -87,6 +100,8 @@ def create_scheduler_router(
                 skill_name=request.skill_name,
                 created_by=request.created_by,
                 session_mode=request.session_mode,
+                trigger_type=request.trigger_type,
+                run_date=request.run_date,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))

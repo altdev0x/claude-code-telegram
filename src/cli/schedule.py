@@ -77,7 +77,13 @@ def schedule() -> None:
 
 @schedule.command(name="add")
 @click.option("--name", required=True, help="Human-readable job name.")
-@click.option("--cron", required=True, help='Cron expression (e.g. "0 9 * * 1-5").')
+@click.option("--cron", default=None, help='Cron expression (e.g. "0 9 * * 1-5").')
+@click.option(
+    "--at",
+    "run_date",
+    default=None,
+    help='One-time run date in ISO 8601 (e.g. "2026-03-01T09:00:00").',
+)
 @click.option("--prompt", required=True, help="Prompt to send to Claude.")
 @click.option(
     "--chat-id",
@@ -95,21 +101,37 @@ def schedule() -> None:
 )
 def add_job(
     name: str,
-    cron: str,
+    cron: Optional[str],
+    run_date: Optional[str],
     prompt: str,
     chat_id: tuple,
     working_dir: Optional[str],
     skill: Optional[str],
     session_mode: str,
 ) -> None:
-    """Add a new scheduled job."""
+    """Add a new scheduled job.
+
+    Exactly one of --cron or --at is required.
+    """
+    if cron and run_date:
+        click.echo("Error: --cron and --at are mutually exclusive.", err=True)
+        sys.exit(1)
+    if not cron and not run_date:
+        click.echo("Error: one of --cron or --at is required.", err=True)
+        sys.exit(1)
+
+    trigger_type = "cron" if cron else "date"
+
     payload: dict = {
         "job_name": name,
-        "cron_expression": cron,
+        "cron_expression": cron or "",
         "prompt": prompt,
         "target_chat_ids": list(chat_id),
         "session_mode": session_mode,
+        "trigger_type": trigger_type,
     }
+    if run_date:
+        payload["run_date"] = run_date
     if working_dir:
         payload["working_directory"] = working_dir
     if skill:
@@ -131,10 +153,15 @@ def list_jobs() -> None:
 
     for job in jobs:
         mode = job.get("session_mode", "isolated")
+        ttype = job.get("trigger_type", "cron")
+        if ttype == "date":
+            schedule_str = f"at {job.get('run_date', '?')}"
+        else:
+            schedule_str = job.get("cron_expression", "?")
         click.echo(
             f"  {job['job_id']}  "
             f"{job['job_name']:<25s}  "
-            f"{job['cron_expression']:<20s}  "
+            f"{schedule_str:<25s}  "
             f"mode={mode}"
         )
 

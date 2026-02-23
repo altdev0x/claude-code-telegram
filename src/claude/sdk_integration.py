@@ -300,10 +300,14 @@ class ClaudeSDKManager:
                     approved_directory=self.config.approved_directory,
                 )
 
-            # Resume previous session if we have a session_id
+            # Resume previous session if we have a session_id.
+            # Only set `resume` — do NOT set `continue_conversation`.
+            # `--continue` tells Claude CLI to pick the *most recent*
+            # session in the project, ignoring `--resume`.  Since the
+            # new prompt is already sent via stdin, `--resume <id>`
+            # alone is sufficient to load the correct session context.
             if session_id and continue_session:
                 options.resume = session_id
-                options.continue_conversation = True
                 logger.info(
                     "Resuming previous session",
                     session_id=session_id,
@@ -320,7 +324,12 @@ class ClaudeSDKManager:
                 client = ClaudeSDKClient(options)
                 try:
                     await client.connect()
-                    await client.query(prompt)
+                    # Pass session_id to query() so Claude CLI routes
+                    # the message to the correct session. Without this,
+                    # "default" resolves to the most recent session in
+                    # the project — which may be a cron session.
+                    query_session_id = session_id if session_id else "default"
+                    await client.query(prompt, session_id=query_session_id)
 
                     # Iterate over raw messages and parse them ourselves
                     # so that MessageParseError (e.g. from rate_limit_event)
