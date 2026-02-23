@@ -1,6 +1,153 @@
 # claude-code-telegram — Enhancement Tracker
 
-## Scheduler
+## Scheduler — Cron Job Agent Awareness
+
+> An "agent" in this context is a working directory. Each directory has its own
+> CLAUDE.md, skills, memory files, and configuration. The `working_directory`
+> field on a scheduled job already identifies which agent should execute it.
+
+### Use `created_by` as execution user ID
+**Status:** Proposed
+**Priority:** High
+**Depends on:** —
+
+Currently `handle_scheduled()` runs every cron job as `default_user_id` (typically `0`
+or the first allowed user). This means:
+- In `resume` mode, all jobs share the same session lineage regardless of who created them
+- The per-user+directory concurrency lock groups unrelated jobs together
+- Session history is attributed to the service account, not the actual user
+
+**Fix:** Pass `created_by` through `ScheduledEvent` and use it as `user_id` in
+`run_command()`. The `created_by` field already exists in the `scheduled_jobs` table
+but is ignored at execution time.
+
+**Changes required:**
+- Add `created_by: int` field to `ScheduledEvent` dataclass
+- Pass `created_by` from `_fire_event()` to the event
+- Use `event.created_by` instead of `self.default_user_id` in `handle_scheduled()`
+
+---
+
+### Cron result message boilerplate
+**Status:** Proposed
+**Priority:** High
+**Depends on:** —
+
+Cron results are delivered as plain Telegram messages via NotificationService with no
+metadata. When a user has multiple agents (working directories) with concurrent jobs,
+it's impossible to tell which agent produced which result.
+
+**Fix:** Prepend a static header to every cron result message before publishing the
+`AgentResponseEvent`:
+
+```
+📋 Scheduled Task: {job_name}
+📁 Agent: {working_directory}
+⏰ {timestamp}
+
+{agent response}
+```
+
+**Changes required:**
+- Build boilerplate string in `handle_scheduled()` from `ScheduledEvent` fields
+- Prepend to `response.content` before publishing `AgentResponseEvent`
+- Keep raw `response.content` in `response_summary` for job history (no boilerplate)
+
+---
+
+### Cron session system prompt
+**Status:** Proposed
+**Priority:** High
+**Depends on:** Use `created_by` as execution user ID
+
+Cron sessions currently use the same system prompt as interactive sessions. The agent
+has no awareness that it's running a scheduled task, what the task is called, or that
+its final message will be delivered to the user via Telegram.
+
+**Fix:** Pass a dedicated system prompt (via `SystemPromptPreset.append` or a plain
+`system_prompt` string) when starting cron sessions. The prompt establishes the
+execution context and the output contract.
+
+```
+You are executing a scheduled task.
+- Task: {job_name}
+- Schedule: {cron_expression}
+- Working directory: {working_directory}
+
+Your response will be delivered to the user as a Telegram message.
+If the outcome does not require the user's attention, respond with
+exactly [SILENT] and nothing else. Otherwise, write a concise message
+summarizing the outcome.
+```
+
+> **SDK constraint (v0.1.39):** `system_prompt` is set once at session creation.
+> Cannot be injected mid-session. This is fine for cron sessions since they are
+> always fresh (isolated mode) or forked.
+
+**Changes required:**
+- Build cron system prompt string in `handle_scheduled()` from event fields
+- Thread it through `run_command()` → SDK as `system_prompt` or `append` on the preset
+- `run_command()` needs a new optional `system_prompt_append` parameter (or similar)
+- `ClaudeSDKManager` merges the cron append with any existing preset append
+
+---
+
+### Agent-controlled notification suppression
+**Status:** Proposed
+**Priority:** High
+**Depends on:** Cron session system prompt
+
+The system prompt tells the agent it can respond with `[SILENT]` when the result
+doesn't warrant user attention. The delivery layer needs to honor this.
+
+**Fix:** After cron execution, check the response for the `[SILENT]` sentinel before
+publishing the `AgentResponseEvent`. If silent, log the run in job history but skip
+Telegram delivery.
+
+**Changes required:**
+- In `handle_scheduled()`, after getting `response.content`:
+  - Strip and check if content equals `[SILENT]`
+  - If silent: set `response_summary = "[SILENT]"` in job history, skip event publish
+  - If not silent: publish with boilerplate as normal
+- Job history always records the run regardless of silence
+
+---
+
+### One-time job execution (DateTrigger)
+**Status:** Proposed
+**Priority:** Medium
+**Depends on:** —
+
+Currently all jobs use `CronTrigger` (recurring). APScheduler 3.x also provides
+`DateTrigger` — fires exactly once at a specific datetime, then auto-removes itself
+from the in-memory job store.
+
+```python
+from apscheduler.triggers.date import DateTrigger
+scheduler.add_job(func, 'date', run_date='2026-03-01 14:30:00')
+```
+
+**Schema changes (new migration):**
+- Add `trigger_type TEXT DEFAULT 'cron'` column
+- Add `run_date TEXT` column (ISO 8601, null for cron jobs)
+- Make `cron_expression` nullable (SQLite requires table recreation)
+
+**Code changes:**
+- `add_job()` — accept optional `run_date` parameter, branch on trigger type
+- `_load_jobs_from_db()` — reconstruct `DateTrigger` or `CronTrigger` based on
+  `trigger_type`; skip/soft-delete date jobs where `run_date < now` to prevent
+  re-firing after a service restart
+- `_fire_event()` — after a date job fires, soft-delete the DB row (APScheduler
+  auto-removes from memory but doesn't touch SQLite)
+- CLI `schedule add` — add `--at` flag as alternative to `--cron`
+- API `POST /api/scheduler/jobs` — accept `trigger_type` + `run_date` fields
+
+**Gotcha:** If the service restarts after a date job fired but before the DB row was
+cleaned up, `_load_jobs_from_db()` would re-register it and it would fire again
+(APScheduler treats past `run_date` as immediately due). The load logic must guard
+against this.
+
+---
 
 ### Retry logic on failure
 **Status:** Proposed
@@ -149,3 +296,10 @@ Allows observing (and optionally blocking) compaction events. Cannot trigger com
 **Nested session guard:** Test scripts using the SDK from within a Claude Code session must `os.environ.pop("CLAUDECODE", None)` before importing the SDK, or the CLI refuses to start.
 
 **`rate_limit_event` parse error:** The SDK (v0.1.39) throws `MessageParseError` on `rate_limit_event` messages. The project already handles this in `sdk_integration.py` by using raw `_query.receive_messages()` with try/except on `parse_message`. Any new command handlers should follow the same pattern.
+
+**SDK message capabilities (v0.1.39, researched 2026-02-23):**
+- The SDK can only **send** `type: "user"` messages to the CLI. No system or assistant message injection mid-session.
+- `system_prompt` is set once at session creation via `ClaudeAgentOptions`. Supports plain string or `SystemPromptPreset` with `append`.
+- `fork_session=True` + `resume=<id>` branches from an existing session into a new session ID (original preserved). Does not allow injecting new starting context — carries full prior conversation.
+- `additionalContext` in hook outputs (`UserPromptSubmit`, `SessionStart`) provides ephemeral per-turn context, not persisted in session history.
+- No API to read back session history, append messages without triggering a turn, or pre-seed a new session with arbitrary conversation history.
