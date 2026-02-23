@@ -5,31 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from src.claude.monitor import ToolMonitor
 from src.claude.sdk_integration import ClaudeResponse
 from src.claude.session import ClaudeSession, InMemorySessionStorage, SessionManager
 from src.config.settings import Settings
-
-
-class _MonitorConfigStub:
-    """Minimal config object for ToolMonitor tests."""
-
-    def __init__(self, disable_tool_validation: bool):
-        self.disable_tool_validation = disable_tool_validation
-        self.claude_allowed_tools = ["Read"]
-        self.claude_disallowed_tools = ["Bash"]
-
-
-class _ValidatorStub:
-    """Minimal security validator stub for ToolMonitor tests."""
-
-    def __init__(self, should_allow_path: bool = True):
-        self.should_allow_path = should_allow_path
-
-    def validate_path(self, file_path: str, working_directory: Path):
-        if self.should_allow_path:
-            return True, working_directory / file_path, None
-        return False, None, "invalid path"
 
 
 class TestClaudeSession:
@@ -146,7 +124,8 @@ class TestClaudeSession:
 
     def test_is_expired_handles_legacy_naive_last_used(self):
         """Expiry check should not crash on naive legacy timestamps."""
-        naive_old = datetime.now() - timedelta(hours=30)
+        now_utc = datetime.now(UTC)
+        naive_old = (now_utc - timedelta(hours=30)).replace(tzinfo=None)
         session = ClaudeSession(
             session_id="legacy-session",
             user_id=123,
@@ -182,15 +161,23 @@ class TestInMemorySessionStorage:
         # Save session
         await storage.save_session(sample_session)
 
-        # Load session
-        loaded = await storage.load_session("test-session")
+        # Load session with correct user_id
+        loaded = await storage.load_session("test-session", user_id=123)
         assert loaded is not None
         assert loaded.session_id == sample_session.session_id
         assert loaded.user_id == sample_session.user_id
 
     async def test_load_nonexistent_session(self, storage):
         """Test loading non-existent session."""
-        result = await storage.load_session("nonexistent")
+        result = await storage.load_session("nonexistent", user_id=123)
+        assert result is None
+
+    async def test_load_session_wrong_user(self, storage, sample_session):
+        """Test that loading a session with wrong user_id returns None."""
+        await storage.save_session(sample_session)
+
+        # Load with wrong user_id should return None
+        result = await storage.load_session("test-session", user_id=999)
         assert result is None
 
     async def test_delete_session(self, storage, sample_session):
@@ -200,7 +187,7 @@ class TestInMemorySessionStorage:
         await storage.delete_session("test-session")
 
         # Should no longer exist
-        result = await storage.load_session("test-session")
+        result = await storage.load_session("test-session", user_id=123)
         assert result is None
 
     async def test_get_user_sessions(self, storage):
@@ -245,66 +232,6 @@ class TestInMemorySessionStorage:
 
 class TestSessionManager:
     """Test session manager."""
-
-
-class TestToolMonitorConfigBypass:
-    """Test ToolMonitor behavior when tool validation is disabled."""
-
-    async def test_validate_tool_call_bypasses_allowlist_when_disabled(self):
-        monitor = ToolMonitor(_MonitorConfigStub(disable_tool_validation=True), None)
-
-        allowed, error = await monitor.validate_tool_call(
-            tool_name="TotallyCustomTool",
-            tool_input={},
-            working_directory=Path("/tmp"),
-            user_id=123,
-        )
-
-        assert allowed is True
-        assert error is None
-        assert monitor.tool_usage["TotallyCustomTool"] == 1
-
-    async def test_validate_tool_call_enforces_allowlist_when_enabled(self):
-        monitor = ToolMonitor(_MonitorConfigStub(disable_tool_validation=False), None)
-
-        allowed, error = await monitor.validate_tool_call(
-            tool_name="TotallyCustomTool",
-            tool_input={},
-            working_directory=Path("/tmp"),
-            user_id=123,
-        )
-
-        assert allowed is False
-        assert "Tool not allowed" in (error or "")
-
-    async def test_disable_tool_validation_still_rejects_invalid_file_path(self):
-        validator = _ValidatorStub(should_allow_path=False)
-        monitor = ToolMonitor(
-            _MonitorConfigStub(disable_tool_validation=True), validator
-        )
-
-        allowed, error = await monitor.validate_tool_call(
-            tool_name="Read",
-            tool_input={"file_path": "../secret"},
-            working_directory=Path("/tmp"),
-            user_id=123,
-        )
-
-        assert allowed is False
-        assert error == "invalid path"
-
-    async def test_disable_tool_validation_still_rejects_dangerous_bash(self):
-        monitor = ToolMonitor(_MonitorConfigStub(disable_tool_validation=True), None)
-
-        allowed, error = await monitor.validate_tool_call(
-            tool_name="Bash",
-            tool_input={"command": "echo test > /tmp/out"},
-            working_directory=Path("/tmp"),
-            user_id=123,
-        )
-
-        assert allowed is False
-        assert "Dangerous command pattern detected" in (error or "")
 
     @pytest.fixture
     def config(self, tmp_path):
@@ -391,8 +318,54 @@ class TestToolMonitorConfigBypass:
         assert persisted[0].session_id == "session-1"
 
         # session-2 should be gone
-        loaded = await session_manager.storage.load_session("session-2")
+        loaded = await session_manager.storage.load_session("session-2", user_id=123)
         assert loaded is None
+
+    async def test_get_or_create_rejects_wrong_user_active_cache(self, session_manager):
+        """Requesting another user's session via active cache creates a new one."""
+        existing = ClaudeSession(
+            session_id="other-user-session",
+            user_id=999,
+            project_path=Path("/test/project"),
+            created_at=datetime.now(UTC),
+            last_used=datetime.now(UTC),
+        )
+        session_manager.active_sessions["other-user-session"] = existing
+
+        # User 123 tries to resume user 999's session
+        session = await session_manager.get_or_create_session(
+            user_id=123,
+            project_path=Path("/test/project"),
+            session_id="other-user-session",
+        )
+
+        # Should get a new session, not the other user's
+        assert session.session_id != "other-user-session"
+        assert session.user_id == 123
+        assert session.is_new_session is True
+
+    async def test_get_or_create_rejects_wrong_user_from_storage(self, session_manager):
+        """Requesting another user's session via storage creates a new one."""
+        existing = ClaudeSession(
+            session_id="stored-other-session",
+            user_id=999,
+            project_path=Path("/test/project"),
+            created_at=datetime.now(UTC),
+            last_used=datetime.now(UTC),
+        )
+        await session_manager.storage.save_session(existing)
+
+        # User 123 tries to resume user 999's session
+        session = await session_manager.get_or_create_session(
+            user_id=123,
+            project_path=Path("/test/project"),
+            session_id="stored-other-session",
+        )
+
+        # Should get a new session, not the other user's
+        assert session.session_id != "stored-other-session"
+        assert session.user_id == 123
+        assert session.is_new_session is True
 
 
 class TestUpdateSessionNewWithoutId:

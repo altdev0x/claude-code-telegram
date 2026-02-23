@@ -14,7 +14,6 @@ from ...claude.exceptions import (
     ClaudeProcessError,
     ClaudeSessionError,
     ClaudeTimeoutError,
-    ClaudeToolValidationError,
 )
 from ...config.settings import Settings
 from ...security.audit import AuditLogger
@@ -155,9 +154,9 @@ def _format_error_message(error: Exception | str) -> str:
     if isinstance(error_obj, ClaudeProcessError):
         return _format_process_error(error_str)
 
-    # ClaudeToolValidationError (and any future ClaudeError subtypes not
-    # explicitly handled above) — preserve their existing message as-is
-    # rather than downgrading to a generic "process error".
+    # Any future ClaudeError subtypes not explicitly handled above —
+    # preserve their existing message as-is rather than downgrading
+    # to a generic "process error".
     if isinstance(error_obj, ClaudeError):
         safe_error = escape_html(error_str)
         if len(safe_error) > 500:
@@ -404,18 +403,6 @@ async def handle_text_message(
                 claude_response.content
             )
 
-        except ClaudeToolValidationError as e:
-            # Tool validation error with detailed instructions
-            logger.error(
-                "Tool validation error",
-                error=str(e),
-                user_id=user_id,
-                blocked_tools=e.blocked_tools,
-            )
-            # Error message already formatted, create FormattedMessage
-            from ..utils.formatting import FormattedMessage
-
-            formatted_messages = [FormattedMessage(str(e), parse_mode="HTML")]
         except Exception as e:
             logger.error("Claude integration failed", error=str(e), user_id=user_id)
             from ..utils.formatting import FormattedMessage
@@ -456,6 +443,10 @@ async def handle_text_message(
                         ),
                     )
                 except Exception as plain_err:
+                    logger.error(
+                        "Failed to send plain text fallback response",
+                        error=str(plain_err),
+                    )
                     # Include what actually went wrong instead of a generic message
                     await update.message.reply_text(
                         f"Failed to deliver response "
@@ -530,8 +521,8 @@ async def handle_text_message(
         # Clean up progress message if it exists
         try:
             await progress_msg.delete()
-        except Exception:
-            pass
+        except Exception as delete_error:
+            logger.debug("Failed to delete progress message", error=str(delete_error))
 
         await update.message.reply_text(_format_error_message(e), parse_mode="HTML")
 
@@ -552,6 +543,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.effective_user.id
     document = update.message.document
     settings: Settings = context.bot_data["settings"]
+
+    # Initialize prompt to avoid UnboundLocalError
+    prompt: str = ""
 
     # Get services
     security_validator: Optional[SecurityValidator] = context.bot_data.get(
@@ -761,8 +755,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         try:
             await progress_msg.delete()
-        except Exception:
-            pass
+        except Exception as delete_error:
+            logger.debug("Failed to delete progress message", error=str(delete_error))
 
         error_msg = f"❌ <b>Error processing file</b>\n\n{escape_html(str(e))}"
         await update.message.reply_text(error_msg, parse_mode="HTML")

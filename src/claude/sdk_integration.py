@@ -23,8 +23,11 @@ from claude_agent_sdk import (
     CLIJSONDecodeError,
     CLINotFoundError,
     Message,
+    PermissionResultAllow,
+    PermissionResultDeny,
     ProcessError,
     ResultMessage,
+    ToolPermissionContext,
     ToolUseBlock,
     UserMessage,
 )
@@ -32,12 +35,14 @@ from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 
 from ..config.settings import Settings
+from ..security.validators import SecurityValidator
 from .exceptions import (
     ClaudeMCPError,
     ClaudeParsingError,
     ClaudeProcessError,
     ClaudeTimeoutError,
 )
+from .monitor import _is_claude_internal_path, check_bash_directory_boundary
 
 logger = structlog.get_logger()
 
@@ -127,12 +132,78 @@ class StreamUpdate:
     metadata: Optional[Dict] = None
 
 
+def _make_can_use_tool_callback(
+    security_validator: SecurityValidator,
+    working_directory: Path,
+    approved_directory: Path,
+) -> Any:
+    """Create a can_use_tool callback for SDK-level tool permission validation.
+
+    The callback validates file path boundaries and bash directory boundaries
+    *before* the SDK executes the tool, providing preventive security enforcement.
+    """
+    _FILE_TOOLS = {"Write", "Edit", "Read", "create_file", "edit_file", "read_file"}
+    _BASH_TOOLS = {"Bash", "bash", "shell"}
+
+    async def can_use_tool(
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        context: ToolPermissionContext,
+    ) -> Any:
+        # File path validation
+        if tool_name in _FILE_TOOLS:
+            file_path = tool_input.get("file_path") or tool_input.get("path")
+            if file_path:
+                # Allow Claude Code internal paths (~/.claude/plans/, etc.)
+                if _is_claude_internal_path(file_path):
+                    return PermissionResultAllow()
+
+                valid, _resolved, error = security_validator.validate_path(
+                    file_path, working_directory
+                )
+                if not valid:
+                    logger.warning(
+                        "can_use_tool denied file operation",
+                        tool_name=tool_name,
+                        file_path=file_path,
+                        error=error,
+                    )
+                    return PermissionResultDeny(message=error or "Invalid file path")
+
+        # Bash directory boundary validation
+        if tool_name in _BASH_TOOLS:
+            command = tool_input.get("command", "")
+            if command:
+                valid, error = check_bash_directory_boundary(
+                    command, working_directory, approved_directory
+                )
+                if not valid:
+                    logger.warning(
+                        "can_use_tool denied bash command",
+                        tool_name=tool_name,
+                        command=command,
+                        error=error,
+                    )
+                    return PermissionResultDeny(
+                        message=error or "Bash directory boundary violation"
+                    )
+
+        return PermissionResultAllow()
+
+    return can_use_tool
+
+
 class ClaudeSDKManager:
     """Manage Claude Code SDK integration."""
 
-    def __init__(self, config: Settings):
+    def __init__(
+        self,
+        config: Settings,
+        security_validator: Optional[SecurityValidator] = None,
+    ):
         """Initialize SDK manager with configuration."""
         self.config = config
+        self.security_validator = security_validator
 
         # Try to find and update PATH for Claude CLI
         if not update_path_for_claude(config.claude_cli_path):
@@ -168,6 +239,13 @@ class ClaudeSDKManager:
         )
 
         try:
+            # Capture stderr from Claude CLI for better error diagnostics
+            stderr_lines: List[str] = []
+
+            def _stderr_callback(line: str) -> None:
+                stderr_lines.append(line)
+                logger.debug("Claude CLI stderr", line=line)
+
             # Build Claude Agent options
             cli_path = find_claude_cli(self.config.claude_cli_path)
             options = ClaudeAgentOptions(
@@ -186,6 +264,7 @@ class ClaudeSDKManager:
                     f"All file operations must stay within {working_directory}. "
                     "Use relative paths."
                 ),
+                stderr=_stderr_callback,
             )
 
             # Pass MCP server configuration if enabled
@@ -194,6 +273,14 @@ class ClaudeSDKManager:
                 logger.info(
                     "MCP servers configured",
                     mcp_config_path=str(self.config.mcp_config_path),
+                )
+
+            # Wire can_use_tool callback for preventive tool validation
+            if self.security_validator:
+                options.can_use_tool = _make_can_use_tool_callback(
+                    security_validator=self.security_validator,
+                    working_directory=working_directory,
+                    approved_directory=self.config.approved_directory,
                 )
 
             # Resume previous session if we have a session_id
@@ -209,7 +296,13 @@ class ClaudeSDKManager:
             messages: List[Message] = []
 
             async def _run_client() -> None:
-                async with ClaudeSDKClient(options) as client:
+                # Use connect(None) + query(prompt) pattern because
+                # can_use_tool requires the prompt as AsyncIterable, not
+                # a plain string. connect(None) uses an empty async
+                # iterable internally, satisfying the requirement.
+                client = ClaudeSDKClient(options)
+                try:
+                    await client.connect()
                     await client.query(prompt)
 
                     # Iterate over raw messages and parse them ourselves
@@ -246,6 +339,8 @@ class ClaudeSDKManager:
                                     error=str(callback_error),
                                     error_type=type(callback_error).__name__,
                                 )
+                finally:
+                    await client.disconnect()
 
             # Execute with timeout
             await asyncio.wait_for(
@@ -337,10 +432,15 @@ class ClaudeSDKManager:
 
         except ProcessError as e:
             error_str = str(e)
+            # Include captured stderr for better diagnostics
+            captured_stderr = "\n".join(stderr_lines[-20:]) if stderr_lines else ""
+            if captured_stderr:
+                error_str = f"{error_str}\nStderr: {captured_stderr}"
             logger.error(
                 "Claude process failed",
                 error=error_str,
                 exit_code=getattr(e, "exit_code", None),
+                stderr=captured_stderr or None,
             )
             # Check if the process error is MCP-related
             if "mcp" in error_str.lower():
