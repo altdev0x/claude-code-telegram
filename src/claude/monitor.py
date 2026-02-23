@@ -14,7 +14,7 @@ import structlog
 # Subdirectories under ~/.claude/ that Claude Code uses internally.
 # File operations targeting these paths are allowed even when they fall
 # outside the project's approved directory.
-_CLAUDE_INTERNAL_SUBDIRS: Set[str] = {"plans", "todos", "settings.json"}
+_CLAUDE_INTERNAL_SUBDIRS: Set[str] = {"plans", "todos", "skills", "settings.json"}
 
 logger = structlog.get_logger()
 
