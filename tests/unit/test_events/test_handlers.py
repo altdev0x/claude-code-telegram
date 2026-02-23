@@ -23,12 +23,22 @@ def mock_claude() -> AsyncMock:
 
 
 @pytest.fixture
-def agent_handler(event_bus: EventBus, mock_claude: AsyncMock) -> AgentHandler:
+def mock_scheduler() -> AsyncMock:
+    mock = AsyncMock()
+    mock.record_job_run = AsyncMock()
+    return mock
+
+
+@pytest.fixture
+def agent_handler(
+    event_bus: EventBus, mock_claude: AsyncMock, mock_scheduler: AsyncMock
+) -> AgentHandler:
     handler = AgentHandler(
         event_bus=event_bus,
         claude_integration=mock_claude,
         default_working_directory=Path("/tmp/test"),
         default_user_id=42,
+        job_scheduler=mock_scheduler,
     )
     handler.register()
     return handler
@@ -158,3 +168,106 @@ class TestAgentHandler:
         big_payload = {"key": "x" * 3000}
         summary = agent_handler._summarize_payload(big_payload)
         assert len(summary) <= 2100  # 2000 + truncation message
+
+    async def test_isolated_mode_sets_force_new(
+        self,
+        event_bus: EventBus,
+        mock_claude: AsyncMock,
+        agent_handler: AgentHandler,
+    ) -> None:
+        """Isolated session_mode passes force_new=True to run_command."""
+        mock_response = MagicMock()
+        mock_response.content = "Done"
+        mock_response.cost = 0.01
+        mock_claude.run_command.return_value = mock_response
+
+        event = ScheduledEvent(
+            job_id="job-1",
+            job_name="test",
+            prompt="hello",
+            target_chat_ids=[100],
+            session_mode="isolated",
+        )
+
+        await agent_handler.handle_scheduled(event)
+
+        call_kwargs = mock_claude.run_command.call_args.kwargs
+        assert call_kwargs["force_new"] is True
+
+    async def test_resume_mode_no_force_new(
+        self,
+        event_bus: EventBus,
+        mock_claude: AsyncMock,
+        agent_handler: AgentHandler,
+    ) -> None:
+        """Resume session_mode passes force_new=False to run_command."""
+        mock_response = MagicMock()
+        mock_response.content = "Done"
+        mock_response.cost = 0.01
+        mock_claude.run_command.return_value = mock_response
+
+        event = ScheduledEvent(
+            job_id="job-1",
+            job_name="test",
+            prompt="hello",
+            target_chat_ids=[100],
+            session_mode="resume",
+        )
+
+        await agent_handler.handle_scheduled(event)
+
+        call_kwargs = mock_claude.run_command.call_args.kwargs
+        assert call_kwargs["force_new"] is False
+
+    async def test_job_run_recorded_on_success(
+        self,
+        event_bus: EventBus,
+        mock_claude: AsyncMock,
+        mock_scheduler: AsyncMock,
+        agent_handler: AgentHandler,
+    ) -> None:
+        """Successful scheduled runs are recorded in job history."""
+        mock_response = MagicMock()
+        mock_response.content = "Result"
+        mock_response.cost = 0.02
+        mock_claude.run_command.return_value = mock_response
+
+        event = ScheduledEvent(
+            job_id="job-1",
+            job_name="test",
+            prompt="hello",
+            target_chat_ids=[100],
+        )
+
+        await agent_handler.handle_scheduled(event)
+
+        mock_scheduler.record_job_run.assert_called_once()
+        call_kwargs = mock_scheduler.record_job_run.call_args.kwargs
+        assert call_kwargs["job_id"] == "job-1"
+        assert call_kwargs["success"] is True
+        assert call_kwargs["cost"] == 0.02
+        assert call_kwargs["response_summary"] == "Result"
+
+    async def test_job_run_recorded_on_failure(
+        self,
+        event_bus: EventBus,
+        mock_claude: AsyncMock,
+        mock_scheduler: AsyncMock,
+        agent_handler: AgentHandler,
+    ) -> None:
+        """Failed scheduled runs are recorded with the error message."""
+        mock_claude.run_command.side_effect = RuntimeError("SDK crash")
+
+        event = ScheduledEvent(
+            job_id="job-1",
+            job_name="test",
+            prompt="hello",
+            target_chat_ids=[100],
+        )
+
+        await agent_handler.handle_scheduled(event)
+
+        mock_scheduler.record_job_run.assert_called_once()
+        call_kwargs = mock_scheduler.record_job_run.call_args.kwargs
+        assert call_kwargs["success"] is False
+        assert "SDK crash" in call_kwargs["error_message"]

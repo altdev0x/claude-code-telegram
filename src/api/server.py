@@ -23,15 +23,38 @@ def create_api_app(
     event_bus: EventBus,
     settings: Settings,
     db_manager: Optional[DatabaseManager] = None,
+    job_scheduler: Optional[Any] = None,
 ) -> FastAPI:
     """Create the FastAPI application."""
-
     app = FastAPI(
         title="Claude Code Telegram - Webhook API",
         version="0.1.0",
         docs_url="/docs" if settings.development_mode else None,
         redoc_url=None,
     )
+
+    # Mount scheduler routes if scheduler is available
+    if job_scheduler:
+        from .scheduler_routes import create_scheduler_router
+
+        def _verify_admin_token(
+            authorization: Optional[str] = Header(None),
+        ) -> None:
+            """Verify Bearer token for admin API endpoints."""
+            secret = settings.webhook_api_secret
+            if not secret:
+                raise HTTPException(
+                    status_code=500,
+                    detail="WEBHOOK_API_SECRET not configured",
+                )
+            if not verify_shared_secret(authorization, secret):
+                raise HTTPException(status_code=401, detail="Invalid authorization")
+
+        scheduler_router = create_scheduler_router(
+            job_scheduler=job_scheduler,
+            verify_token=_verify_admin_token,
+        )
+        app.include_router(scheduler_router)
 
     @app.get("/health")
     async def health_check() -> Dict[str, str]:
@@ -176,15 +199,19 @@ async def run_api_server(
     event_bus: EventBus,
     settings: Settings,
     db_manager: Optional[DatabaseManager] = None,
+    job_scheduler: Optional[Any] = None,
 ) -> None:
-    """Run the FastAPI server using uvicorn."""
+    """Run the FastAPI server using uvicorn.
+
+    Binds to 127.0.0.1 (localhost only) to prevent external access.
+    """
     import uvicorn
 
-    app = create_api_app(event_bus, settings, db_manager)
+    app = create_api_app(event_bus, settings, db_manager, job_scheduler)
 
     config = uvicorn.Config(
         app=app,
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=settings.api_server_port,
         log_level="info" if not settings.debug else "debug",
     )

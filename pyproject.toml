@@ -28,7 +28,7 @@ Repository = "https://github.com/richardatkinson/claude-code-telegram"
 Documentation = "https://github.com/richardatkinson/claude-code-telegram/blob/main/docs/"
 
 [project.scripts]
-claude-telegram-bot = "src.main:run"
+claude-telegram-bot = "src.cli.main:cli"
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]

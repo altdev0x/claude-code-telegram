@@ -4,8 +4,9 @@ AgentHandler: translates events into ClaudeIntegration.run_command() calls.
 NotificationHandler: subscribes to AgentResponseEvent and delivers to Telegram.
 """
 
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import structlog
 
@@ -30,11 +31,13 @@ class AgentHandler:
         claude_integration: ClaudeIntegration,
         default_working_directory: Path,
         default_user_id: int = 0,
+        job_scheduler: Optional["JobScheduler"] = None,  # noqa: F821
     ) -> None:
         self.event_bus = event_bus
         self.claude = claude_integration
         self.default_working_directory = default_working_directory
         self.default_user_id = default_user_id
+        self.job_scheduler = job_scheduler
 
     def register(self) -> None:
         """Subscribe to events that need agent processing."""
@@ -90,6 +93,7 @@ class AgentHandler:
             "Processing scheduled event through agent",
             job_id=event.job_id,
             job_name=event.job_name,
+            session_mode=event.session_mode,
         )
 
         prompt = event.prompt
@@ -99,15 +103,27 @@ class AgentHandler:
             )
 
         working_dir = event.working_directory or self.default_working_directory
+        force_new = event.session_mode == "isolated"
+
+        fired_at = datetime.now(UTC)
+        success = False
+        error_message: Optional[str] = None
+        response_summary: Optional[str] = None
+        cost = 0.0
 
         try:
             response = await self.claude.run_command(
                 prompt=prompt,
                 working_directory=working_dir,
                 user_id=self.default_user_id,
+                force_new=force_new,
             )
 
+            success = True
+            cost = response.cost
             if response.content:
+                response_summary = response.content[:500]
+
                 for chat_id in event.target_chat_ids:
                     await self.event_bus.publish(
                         AgentResponseEvent(
@@ -126,12 +142,30 @@ class AgentHandler:
                             originating_event_id=event.id,
                         )
                     )
-        except Exception:
+        except Exception as exc:
+            error_message = str(exc)[:500]
             logger.exception(
                 "Agent execution failed for scheduled event",
                 job_id=event.job_id,
                 event_id=event.id,
             )
+        finally:
+            if self.job_scheduler and event.job_id:
+                try:
+                    await self.job_scheduler.record_job_run(
+                        job_id=event.job_id,
+                        fired_at=fired_at,
+                        completed_at=datetime.now(UTC),
+                        success=success,
+                        response_summary=response_summary,
+                        cost=cost,
+                        error_message=error_message,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to record job run",
+                        job_id=event.job_id,
+                    )
 
     def _build_webhook_prompt(self, event: WebhookEvent) -> str:
         """Build a Claude prompt from a webhook event."""

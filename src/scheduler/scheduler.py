@@ -4,6 +4,7 @@ Wraps APScheduler's AsyncIOScheduler and publishes ScheduledEvents
 to the event bus when jobs fire.
 """
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +55,7 @@ class JobScheduler:
         working_directory: Optional[Path] = None,
         skill_name: Optional[str] = None,
         created_by: int = 0,
+        session_mode: str = "isolated",
     ) -> str:
         """Add a new scheduled job.
 
@@ -65,10 +67,15 @@ class JobScheduler:
             working_directory: Working directory for Claude execution.
             skill_name: Optional skill to invoke.
             created_by: Telegram user ID of the creator.
+            session_mode: "isolated" (fresh session) or "resume" (continue
+                          the user's most recent session for the directory).
 
         Returns:
             The job ID.
         """
+        if session_mode not in ("isolated", "resume"):
+            raise ValueError(f"Invalid session_mode: {session_mode!r}")
+
         trigger = CronTrigger.from_crontab(cron_expression)
         work_dir = working_directory or self.default_working_directory
 
@@ -81,6 +88,7 @@ class JobScheduler:
                 "working_directory": str(work_dir),
                 "target_chat_ids": target_chat_ids or [],
                 "skill_name": skill_name,
+                "session_mode": session_mode,
             },
             name=job_name,
         )
@@ -95,6 +103,7 @@ class JobScheduler:
             working_directory=str(work_dir),
             skill_name=skill_name,
             created_by=created_by,
+            session_mode=session_mode,
         )
 
         logger.info(
@@ -102,17 +111,19 @@ class JobScheduler:
             job_id=job.id,
             job_name=job_name,
             cron=cron_expression,
+            session_mode=session_mode,
         )
         return str(job.id)
 
     async def remove_job(self, job_id: str) -> bool:
-        """Remove a scheduled job."""
+        """Remove a scheduled job and its execution history."""
         try:
             self._scheduler.remove_job(job_id)
         except Exception:
             logger.warning("Job not found in scheduler", job_id=job_id)
 
         await self._delete_job(job_id)
+        await self._delete_job_runs(job_id)
         logger.info("Scheduled job removed", job_id=job_id)
         return True
 
@@ -125,6 +136,67 @@ class JobScheduler:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    async def record_job_run(
+        self,
+        job_id: str,
+        fired_at: datetime,
+        completed_at: datetime,
+        success: bool,
+        response_summary: Optional[str] = None,
+        cost: float = 0.0,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Record a job execution and enforce per-job retention (20 runs)."""
+        async with self.db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO scheduled_job_runs
+                (job_id, fired_at, completed_at, success, response_summary,
+                 cost, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    fired_at.isoformat(),
+                    completed_at.isoformat(),
+                    success,
+                    response_summary,
+                    cost,
+                    error_message,
+                ),
+            )
+            # Prune old runs beyond retention limit
+            await conn.execute(
+                """
+                DELETE FROM scheduled_job_runs
+                WHERE job_id = ? AND id NOT IN (
+                    SELECT id FROM scheduled_job_runs
+                    WHERE job_id = ?
+                    ORDER BY fired_at DESC
+                    LIMIT 20
+                )
+                """,
+                (job_id, job_id),
+            )
+            await conn.commit()
+
+    async def get_job_history(
+        self, job_id: str, limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """Get execution history for a job."""
+        async with self.db_manager.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM scheduled_job_runs
+                WHERE job_id = ?
+                ORDER BY fired_at DESC
+                LIMIT ?
+                """,
+                (job_id, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
     async def _fire_event(
         self,
         job_name: str,
@@ -132,6 +204,7 @@ class JobScheduler:
         working_directory: str,
         target_chat_ids: List[int],
         skill_name: Optional[str],
+        session_mode: str = "isolated",
     ) -> None:
         """Called by APScheduler when a job triggers. Publishes a ScheduledEvent."""
         event = ScheduledEvent(
@@ -140,12 +213,14 @@ class JobScheduler:
             working_directory=Path(working_directory),
             target_chat_ids=target_chat_ids,
             skill_name=skill_name,
+            session_mode=session_mode,
         )
 
         logger.info(
             "Scheduled job fired",
             job_name=job_name,
             event_id=event.id,
+            session_mode=session_mode,
         )
 
         await self.event_bus.publish(event)
@@ -181,6 +256,7 @@ class JobScheduler:
                             "working_directory": row_dict["working_directory"],
                             "target_chat_ids": chat_ids,
                             "skill_name": row_dict.get("skill_name"),
+                            "session_mode": row_dict.get("session_mode", "isolated"),
                         },
                         id=row_dict["job_id"],
                         name=row_dict["job_name"],
@@ -212,6 +288,7 @@ class JobScheduler:
         working_directory: str,
         skill_name: Optional[str],
         created_by: int,
+        session_mode: str = "isolated",
     ) -> None:
         """Persist a job definition to the database."""
         chat_ids_str = ",".join(str(cid) for cid in target_chat_ids)
@@ -220,8 +297,9 @@ class JobScheduler:
                 """
                 INSERT OR REPLACE INTO scheduled_jobs
                 (job_id, job_name, cron_expression, prompt, target_chat_ids,
-                 working_directory, skill_name, created_by, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 working_directory, skill_name, created_by, is_active,
+                 session_mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     job_id,
@@ -232,6 +310,7 @@ class JobScheduler:
                     working_directory,
                     skill_name,
                     created_by,
+                    session_mode,
                 ),
             )
             await conn.commit()
@@ -241,6 +320,15 @@ class JobScheduler:
         async with self.db_manager.get_connection() as conn:
             await conn.execute(
                 "UPDATE scheduled_jobs SET is_active = 0 WHERE job_id = ?",
+                (job_id,),
+            )
+            await conn.commit()
+
+    async def _delete_job_runs(self, job_id: str) -> None:
+        """Delete all execution history for a job."""
+        async with self.db_manager.get_connection() as conn:
+            await conn.execute(
+                "DELETE FROM scheduled_job_runs WHERE job_id = ?",
                 (job_id,),
             )
             await conn.commit()

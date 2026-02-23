@@ -310,6 +310,31 @@ class DatabaseManager:
                     ON project_threads(project_slug);
                 """,
             ),
+            (
+                5,
+                """
+                -- Add session_mode to scheduled_jobs
+                ALTER TABLE scheduled_jobs
+                    ADD COLUMN session_mode TEXT DEFAULT 'isolated';
+
+                -- Job execution history with per-job retention
+                CREATE TABLE IF NOT EXISTS scheduled_job_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    fired_at TIMESTAMP NOT NULL,
+                    completed_at TIMESTAMP,
+                    success BOOLEAN NOT NULL,
+                    response_summary TEXT,
+                    cost REAL DEFAULT 0.0,
+                    error_message TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_job_runs_job_id
+                    ON scheduled_job_runs(job_id);
+                CREATE INDEX IF NOT EXISTS idx_job_runs_fired_at
+                    ON scheduled_job_runs(job_id, fired_at);
+                """,
+            ),
         ]
 
     async def _init_pool(self):

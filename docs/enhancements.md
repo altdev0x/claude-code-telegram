@@ -1,81 +1,11 @@
 # claude-code-telegram — Enhancement Tracker
 
-## CLI
-
-### Unified CLI tool
-**Status:** Proposed
-**Priority:** High
-**Depends on:** —
-
-Single entrypoint for service management and administration. Wraps systemd for process lifecycle (no reimplementation), adds subcommands for scheduler and other admin tasks.
-
-```
-claude-telegram-bot start|stop|restart|status
-claude-telegram-bot schedule add|list|remove|update
-claude-telegram-bot logs [--follow]
-```
-
-Replaces the current split workflow: `systemctl --user` for service control, source code edits for job management.
-
----
-
 ## Scheduler
-
-### CLI job management
-**Status:** Proposed
-**Priority:** High
-**Depends on:** Unified CLI tool
-
-CRUD for scheduled jobs via the CLI. Persists to SQLite and (if the service is running) registers with APScheduler at runtime. No source code changes or restarts needed.
-
-```
-claude-telegram-bot schedule add \
-  --name "Daily health check" \
-  --cron "0 9 * * 1-5" \
-  --prompt "Run tests and report" \
-  --chat-id 8200705927 \
-  --working-dir /home/clawdbot/claude-telegram-workspace/klaus \
-  --session-mode isolated
-
-claude-telegram-bot schedule list
-claude-telegram-bot schedule remove <job_id>
-```
-
----
-
-### Session mode per cron job
-**Status:** Proposed
-**Priority:** High
-**Depends on:** CLI job management
-
-Add a `session_mode` field to scheduled job configuration with two options:
-
-- **`isolated`** (default) — each run creates a fresh session. Best for stateless tasks: health checks, reports, reminders. No context bleed, predictable cost.
-- **`resume`** — continues the most recent session for that job's user+directory. Best for tasks that build on previous state (e.g., ongoing monitoring).
-
-**Changes required:**
-- New `session_mode` column on `scheduled_jobs` table (default: `"isolated"`)
-- Pass through `ScheduledEvent` dataclass
-- `AgentHandler.handle_scheduled()` sets `force_new=True` when mode is `isolated`
-
----
-
-### Job execution history
-**Status:** Proposed
-**Priority:** Medium
-**Depends on:** CLI job management
-
-No logs of past runs exist. Add a `scheduled_job_runs` table tracking:
-- job_id, fired_at, completed_at, success/failure, response summary, cost
-
-Enables: `claude-telegram-bot schedule history <job_id>`, failure alerting, cost tracking per job.
-
----
 
 ### Retry logic on failure
 **Status:** Proposed
 **Priority:** Low
-**Depends on:** Job execution history
+**Depends on:** Job execution history (done)
 
 Currently jobs fire once per schedule match with no retry. Add configurable retry (max attempts, backoff) for jobs that fail due to transient errors.
 
@@ -214,97 +144,7 @@ Allows observing (and optionally blocking) compaction events. Cannot trigger com
 
 ---
 
-## Security / Tool Validation
-
-### Feed validation errors back to Claude instead of killing the session
-**Status:** Done (Phase 3, `can_use_tool` callback)
-**Priority:** High
-**Depends on:** —
-
-Implemented via `_make_can_use_tool_callback` in `sdk_integration.py`. The callback validates tool calls preventively using `PermissionResultDeny`, which returns the error message to Claude as a denied tool result. Claude sees the denial reason and can retry with a valid path or inform the user — no session abort needed.
-
----
-
-## Session Identity
-
-### Session ID self-awareness
-**Status:** Done
-**Priority:** Medium
-**Depends on:** —
-
-Make each Claude Code instance aware of its own session ID by injecting it into the system prompt appendix at session launch time. Enables Claude to reference its session in logs, cross-session communication (e.g., scheduled jobs leaving notes for interactive sessions), and debugging ("which session produced this output?").
-
-> Research completed 2026-02-22. Tested against `claude-agent-sdk` v0.1.39.
-
-**Key finding — chicken-and-egg timing:**
-
-Session IDs are not generated locally. They come from the Claude Code CLI backend in the `ResultMessage` after the first response. This creates a timing gap:
-
-| Scenario | Session ID known? | Can inject? |
-|---|---|---|
-| New session, first message | No — ID doesn't exist yet | No |
-| New session, second+ message | Yes — captured from first response | Yes (it's a resume now) |
-| Resumed session | Yes — stored in DB | Yes |
-
-Claude would be aware of its session ID **from the second message onward**. For resumed sessions (the common case for ongoing work), it's available immediately on the first message.
-
-**Implementation approach:**
-
-In `sdk_integration.py` (lines 185-188), the system prompt is currently hardcoded and rebuilt on every `execute_command()` call via a new `ClaudeAgentOptions`. When resuming (i.e., `session_id` is set), append the ID:
-
-```python
-base_prompt = (
-    f"All file operations must stay within {working_directory}. "
-    "Use relative paths."
-)
-if session_id:
-    base_prompt += f"\n\nYour session ID is: {session_id}"
-
-options = ClaudeAgentOptions(
-    system_prompt=base_prompt,
-    ...
-)
-```
-
-The SDK re-applies the system prompt on resume, so this works with the existing architecture — no lifecycle changes needed.
-
-**Changes required:**
-- Thread `session_id` parameter through to `execute_command()` in `sdk_integration.py` (currently only used for `options.resume`)
-- Conditionally append session ID to the system prompt string when non-empty
-- No database, session manager, or event bus changes needed
-
----
-
-### Interface channel awareness
-**Status:** Done
-**Priority:** Medium
-**Depends on:** —
-
-The Claude Code agent has no way to detect whether it's being invoked via Telegram or the CLI terminal. The bridge is the only component that knows the session originates from Telegram, but it doesn't communicate this. As a result, the agent cannot adapt formatting or behavior to the interface — concise mobile-friendly messages for Telegram, richer output for the terminal.
-
-**Implementation approach:**
-
-In `sdk_integration.py` (lines 185-188), append a channel identifier to the existing system prompt:
-
-```python
-base_prompt = (
-    f"All file operations must stay within {working_directory}. "
-    "Use relative paths.\n\n"
-    "Interface: Telegram chat"
-)
-```
-
-The bridge states the fact; the agent's own instructions (CLAUDE.md / memory) decide what to do with it. CLI invocations naturally lack this line, which is itself a distinguishing signal.
-
-**Changes required:**
-- Add `"Interface: Telegram chat"` to the system prompt in `sdk_integration.py`
-- No configuration, database, or lifecycle changes needed
-
-**Design note:** Keep the injection factual, not behavioral. The bridge should not dictate "be concise" — that's the agent's concern. A neutral label lets each agent workspace define its own channel-specific behavior via its own instructions.
-
----
-
-### Implementation notes
+## Implementation Notes
 
 **Nested session guard:** Test scripts using the SDK from within a Claude Code session must `os.environ.pop("CLAUDECODE", None)` before importing the SDK, or the CLI refuses to start.
 

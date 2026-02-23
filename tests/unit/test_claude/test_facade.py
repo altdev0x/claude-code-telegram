@@ -1,5 +1,6 @@
-"""Test ClaudeIntegration facade — force_new skips auto-resume."""
+"""Test ClaudeIntegration facade — force_new, session locking."""
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -265,6 +266,83 @@ class TestForceNewSurvivesFailure:
         if force_new:
             user_data["force_new_session"] = False
         assert user_data["force_new_session"] is False
+
+
+class TestSessionConcurrencyGuard:
+    """Verify that concurrent run_command calls for the same user+directory
+    are serialized by the session lock."""
+
+    async def test_concurrent_calls_are_serialized(self, facade):
+        """Two concurrent run_command calls for the same user+dir execute
+        sequentially — the second waits for the first to finish."""
+        project = Path("/test/project")
+        user_id = 123
+        execution_order: list = []
+
+        async def slow_execute(**kwargs: Any) -> MagicMock:
+            execution_order.append(
+                "start_1" if len(execution_order) == 0 else "start_2"
+            )
+            await asyncio.sleep(0.05)
+            execution_order.append(
+                "end_1" if execution_order[-1] == "start_1" else "end_2"
+            )
+            return _make_mock_response()
+
+        with patch.object(facade, "_execute", side_effect=slow_execute):
+            t1 = asyncio.create_task(
+                facade.run_command(
+                    prompt="first",
+                    working_directory=project,
+                    user_id=user_id,
+                    force_new=True,
+                )
+            )
+            t2 = asyncio.create_task(
+                facade.run_command(
+                    prompt="second",
+                    working_directory=project,
+                    user_id=user_id,
+                    force_new=True,
+                )
+            )
+            await asyncio.gather(t1, t2)
+
+        # With serialization, one must fully complete before the other starts
+        assert execution_order == ["start_1", "end_1", "start_2", "end_2"]
+
+    async def test_different_users_run_concurrently(self, facade):
+        """Calls for different users are NOT serialized — they run in parallel."""
+        project = Path("/test/project")
+        execution_log: list = []
+
+        async def tracked_execute(**kwargs: Any) -> MagicMock:
+            execution_log.append("start")
+            await asyncio.sleep(0.05)
+            execution_log.append("end")
+            return _make_mock_response()
+
+        with patch.object(facade, "_execute", side_effect=tracked_execute):
+            t1 = asyncio.create_task(
+                facade.run_command(
+                    prompt="first",
+                    working_directory=project,
+                    user_id=100,
+                    force_new=True,
+                )
+            )
+            t2 = asyncio.create_task(
+                facade.run_command(
+                    prompt="second",
+                    working_directory=project,
+                    user_id=200,
+                    force_new=True,
+                )
+            )
+            await asyncio.gather(t1, t2)
+
+        # Both should start before either finishes (parallel)
+        assert execution_log[:2] == ["start", "start"]
 
 
 class TestEmptySessionIdWarning:

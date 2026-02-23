@@ -24,13 +24,38 @@ poetry run pytest tests/unit/test_config.py -k test_name -v
 poetry run mypy src
 ```
 
+### CLI Tool
+
+The `claude-telegram-bot` command provides service management and job scheduling:
+
+```bash
+claude-telegram-bot                        # Start bot (default, backward compatible)
+claude-telegram-bot run                    # Same as above (explicit)
+claude-telegram-bot start|stop|restart     # Manage systemd service
+claude-telegram-bot status                 # Show service status
+claude-telegram-bot logs [-f] [-n 50]      # View service logs
+
+claude-telegram-bot schedule add \         # Add a scheduled job
+  --name "Daily check" \
+  --cron "0 9 * * 1-5" \
+  --prompt "Run tests" \
+  --chat-id 123456 \
+  --session-mode isolated
+
+claude-telegram-bot schedule list          # List active jobs
+claude-telegram-bot schedule remove <id>   # Remove a job
+claude-telegram-bot schedule history <id>  # Show job execution history
+```
+
+The CLI is a thin HTTP client that talks to the running bot's API server on `127.0.0.1`. Requires `WEBHOOK_API_SECRET` to be set. Schedule commands fail with a clear message if the service is not running.
+
 ## Architecture
 
 ### Claude SDK Integration
 
 `ClaudeIntegration` (facade in `src/claude/facade.py`) wraps `ClaudeSDKManager` (`src/claude/sdk_integration.py`), which uses `claude-agent-sdk` with `ClaudeSDKClient` for async streaming. Session IDs come from Claude's `ResultMessage`, not generated locally.
 
-Sessions auto-resume: per user+directory, persisted in SQLite.
+Sessions auto-resume: per user+directory, persisted in SQLite. A per-user+directory `asyncio.Lock` in `ClaudeIntegration` serializes concurrent `run_command()` calls (e.g. interactive message vs. scheduled job) to prevent session collisions.
 
 ### Request Flow
 
@@ -73,11 +98,12 @@ context.bot_data["security_validator"]
 - `src/bot/orchestrator.py` -- MessageOrchestrator: routes to agentic or classic handlers, project-topic routing
 - `src/claude/` -- Claude integration facade, SDK/CLI managers, session management, tool monitoring
 - `src/projects/` -- Multi-project support: `registry.py` (YAML project config), `thread_manager.py` (Telegram topic sync/routing)
-- `src/storage/` -- SQLite via aiosqlite, repository pattern (users, sessions, messages, tool_usage, audit_log, cost_tracking, project_threads)
+- `src/storage/` -- SQLite via aiosqlite, repository pattern (users, sessions, messages, tool_usage, audit_log, cost_tracking, project_threads, scheduled_job_runs)
 - `src/security/` -- Multi-provider auth (whitelist + token), input validators (with optional `disable_security_patterns`), rate limiter, audit logging
-- `src/events/` -- EventBus (async pub/sub), event types, AgentHandler, EventSecurityMiddleware
-- `src/api/` -- FastAPI webhook server, GitHub HMAC-SHA256 + Bearer token auth
-- `src/scheduler/` -- APScheduler cron jobs, persistent storage in SQLite
+- `src/events/` -- EventBus (async pub/sub), event types, AgentHandler (with job run recording), EventSecurityMiddleware
+- `src/api/` -- FastAPI webhook server (bound to `127.0.0.1`), GitHub HMAC-SHA256 + Bearer token auth, scheduler CRUD routes (`scheduler_routes.py`)
+- `src/scheduler/` -- APScheduler cron jobs, persistent storage in SQLite, job execution history with per-job retention (20 runs), session mode support (`isolated`/`resume`)
+- `src/cli/` -- Click CLI: service lifecycle commands (wrapping systemd), schedule management commands (HTTP client to API)
 - `src/notifications/` -- NotificationService, rate-limited Telegram delivery
 
 ### Security Model

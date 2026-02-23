@@ -3,8 +3,10 @@
 Provides simple interface for bot handlers.
 """
 
+import asyncio
+from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import structlog
 
@@ -28,6 +30,9 @@ class ClaudeIntegration:
         self.config = config
         self.sdk_manager = sdk_manager or ClaudeSDKManager(config)
         self.session_manager = session_manager
+        self._session_locks: Dict[Tuple[int, str], asyncio.Lock] = defaultdict(
+            asyncio.Lock
+        )
 
     async def run_command(
         self,
@@ -38,7 +43,33 @@ class ClaudeIntegration:
         on_stream: Optional[Callable[[StreamUpdate], None]] = None,
         force_new: bool = False,
     ) -> ClaudeResponse:
-        """Run Claude Code command with full integration."""
+        """Run Claude Code command with full integration.
+
+        Acquires a per-user+directory lock so that concurrent calls
+        (e.g. interactive message vs. scheduled job) are serialized
+        and cannot collide on the same session.
+        """
+        lock_key = (user_id, str(working_directory))
+        async with self._session_locks[lock_key]:
+            return await self._run_command_locked(
+                prompt=prompt,
+                working_directory=working_directory,
+                user_id=user_id,
+                session_id=session_id,
+                on_stream=on_stream,
+                force_new=force_new,
+            )
+
+    async def _run_command_locked(
+        self,
+        prompt: str,
+        working_directory: Path,
+        user_id: int,
+        session_id: Optional[str] = None,
+        on_stream: Optional[Callable[[StreamUpdate], None]] = None,
+        force_new: bool = False,
+    ) -> ClaudeResponse:
+        """Inner run_command implementation, called while holding the session lock."""
         logger.info(
             "Running Claude command",
             user_id=user_id,
