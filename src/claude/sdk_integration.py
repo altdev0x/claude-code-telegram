@@ -32,6 +32,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk._errors import MessageParseError
+from claude_agent_sdk.types import SystemPromptPreset
 from claude_agent_sdk._internal.message_parser import parse_message
 
 from ..config.settings import Settings
@@ -220,6 +221,25 @@ class ClaudeSDKManager:
         else:
             logger.info("No API key provided, using existing Claude CLI authentication")
 
+    def _build_system_prompt(
+        self,
+        working_directory: Path,
+        session_id: Optional[str],
+    ) -> SystemPromptPreset:
+        """Build system prompt using Claude Code preset with custom append."""
+        parts = [
+            f"All file operations must stay within {working_directory}. Use relative paths.",
+            "Interface: Telegram chat",
+        ]
+        if session_id:
+            parts.append(f"Your session ID is: {session_id}")
+
+        return SystemPromptPreset(
+            type="preset",
+            preset="claude_code",
+            append="\n\n".join(parts),
+        )
+
     async def execute_command(
         self,
         prompt: str,
@@ -260,10 +280,7 @@ class ClaudeSDKManager:
                     "autoAllowBashIfSandboxed": True,
                     "excludedCommands": self.config.sandbox_excluded_commands or [],
                 },
-                system_prompt=(
-                    f"All file operations must stay within {working_directory}. "
-                    "Use relative paths."
-                ),
+                system_prompt=self._build_system_prompt(working_directory, session_id),
                 stderr=_stderr_callback,
             )
 

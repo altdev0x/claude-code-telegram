@@ -418,10 +418,8 @@ class TestClaudeSandboxSettings:
             "excludedCommands": ["git", "npm"],
         }
 
-    async def test_system_prompt_set_with_working_directory(
-        self, sdk_manager, tmp_path
-    ):
-        """Test that system_prompt references the working directory."""
+    async def test_system_prompt_uses_preset_dict(self, sdk_manager, tmp_path):
+        """Test that system_prompt is a Claude Code preset dict."""
         captured_options = []
         mock_factory = _mock_client_factory(
             _make_assistant_message("Test response"),
@@ -438,9 +436,12 @@ class TestClaudeSandboxSettings:
             )
 
         assert len(captured_options) == 1
-        opts = captured_options[0]
-        assert str(tmp_path) in opts.system_prompt
-        assert "relative paths" in opts.system_prompt.lower()
+        sp = captured_options[0].system_prompt
+        assert isinstance(sp, dict)
+        assert sp["type"] == "preset"
+        assert sp["preset"] == "claude_code"
+        assert str(tmp_path) in sp["append"]
+        assert "relative paths" in sp["append"].lower()
 
     async def test_disallowed_tools_passed_to_options(self, tmp_path):
         """Test that disallowed_tools from config are passed to ClaudeAgentOptions."""
@@ -859,3 +860,49 @@ class TestSessionIdFallback:
 
         # Should fall back to the input session_id
         assert response.session_id == "input-session-id"
+
+
+class TestBuildSystemPrompt:
+    """Test ClaudeSDKManager._build_system_prompt()."""
+
+    @pytest.fixture
+    def sdk_manager(self, tmp_path):
+        config = Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            claude_timeout_seconds=2,
+        )
+        return ClaudeSDKManager(config)
+
+    def test_returns_preset_dict(self, sdk_manager):
+        """Return value is a dict with type, preset, and append keys."""
+        result = sdk_manager._build_system_prompt(Path("/work"), session_id=None)
+        assert isinstance(result, dict)
+        assert result["type"] == "preset"
+        assert result["preset"] == "claude_code"
+        assert "append" in result
+
+    def test_without_session_id(self, sdk_manager):
+        """Without session_id, append contains working dir and interface but no session line."""
+        result = sdk_manager._build_system_prompt(Path("/work"), session_id=None)
+        append = result["append"]
+        assert "/work" in append
+        assert "Interface: Telegram chat" in append
+        assert "session ID" not in append
+
+    def test_with_session_id(self, sdk_manager):
+        """With session_id, append includes all three parts."""
+        result = sdk_manager._build_system_prompt(
+            Path("/work"), session_id="sess-abc-123"
+        )
+        append = result["append"]
+        assert "/work" in append
+        assert "Interface: Telegram chat" in append
+        assert "Your session ID is: sess-abc-123" in append
+
+    def test_interface_always_present(self, sdk_manager):
+        """Interface: Telegram chat is always in append regardless of session_id."""
+        for sid in [None, "", "some-id"]:
+            result = sdk_manager._build_system_prompt(Path("/work"), session_id=sid)
+            assert "Interface: Telegram chat" in result["append"]
