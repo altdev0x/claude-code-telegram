@@ -88,6 +88,7 @@ class TestAgentHandler:
         """Scheduled events invoke Claude with the job's prompt."""
         mock_response = MagicMock()
         mock_response.content = "Standup summary"
+        mock_response.cost = 0.05
         mock_claude.run_command.return_value = mock_response
 
         published: list = []
@@ -113,6 +114,10 @@ class TestAgentHandler:
         response_events = [e for e in published if isinstance(e, AgentResponseEvent)]
         assert len(response_events) == 1
         assert response_events[0].chat_id == 100
+        # Notification text includes header and original content
+        text = response_events[0].text
+        assert "<b>standup</b>" in text
+        assert "Standup summary" in text
 
     async def test_scheduled_event_with_skill(
         self, event_bus: EventBus, mock_claude: AsyncMock, agent_handler: AgentHandler
@@ -120,6 +125,7 @@ class TestAgentHandler:
         """Scheduled events with skill_name prepend the skill invocation."""
         mock_response = MagicMock()
         mock_response.content = "Done"
+        mock_response.cost = 0.01
         mock_claude.run_command.return_value = mock_response
 
         event = ScheduledEvent(
@@ -273,3 +279,83 @@ class TestAgentHandler:
         call_kwargs = mock_scheduler.record_job_run.call_args.kwargs
         assert call_kwargs["success"] is False
         assert "SDK crash" in call_kwargs["error_message"]
+
+    async def test_scheduled_notification_header_format(
+        self,
+        event_bus: EventBus,
+        mock_claude: AsyncMock,
+        agent_handler: AgentHandler,
+    ) -> None:
+        """Scheduled notifications include a formatted header with job metadata."""
+        mock_response = MagicMock()
+        mock_response.content = "All tests passed."
+        mock_response.cost = 0.13
+        mock_claude.run_command.return_value = mock_response
+
+        published: list = []
+        original_publish = event_bus.publish
+
+        async def capture_publish(event):  # type: ignore[no-untyped-def]
+            published.append(event)
+            await original_publish(event)
+
+        event_bus.publish = capture_publish  # type: ignore[assignment]
+
+        event = ScheduledEvent(
+            job_name="nightly tests",
+            prompt="Run the full test suite",
+            target_chat_ids=[200],
+            working_directory="/home/user/projects/myapp",
+            session_mode="isolated",
+        )
+
+        await agent_handler.handle_scheduled(event)
+
+        response_events = [e for e in published if isinstance(e, AgentResponseEvent)]
+        assert len(response_events) == 1
+        text = response_events[0].text
+
+        # Header line 1: emoji + bold job name
+        assert "\U0001f4cb <b>nightly tests</b>" in text
+        # Header line 2: short dir, session mode, cost
+        assert "myapp" in text
+        assert "isolated" in text
+        assert "$0.13" in text
+        # Original content follows after blank line
+        assert "\nAll tests passed." in text
+
+    async def test_scheduled_notification_broadcast_has_header(
+        self,
+        event_bus: EventBus,
+        mock_claude: AsyncMock,
+        agent_handler: AgentHandler,
+    ) -> None:
+        """Broadcast path (no target_chat_ids) also includes the header."""
+        mock_response = MagicMock()
+        mock_response.content = "Done"
+        mock_response.cost = 0.0
+        mock_claude.run_command.return_value = mock_response
+
+        published: list = []
+        original_publish = event_bus.publish
+
+        async def capture_publish(event):  # type: ignore[no-untyped-def]
+            published.append(event)
+            await original_publish(event)
+
+        event_bus.publish = capture_publish  # type: ignore[assignment]
+
+        event = ScheduledEvent(
+            job_name="health check",
+            prompt="Check status",
+            target_chat_ids=[],
+            working_directory="/home/user/workspace/klaus",
+        )
+
+        await agent_handler.handle_scheduled(event)
+
+        response_events = [e for e in published if isinstance(e, AgentResponseEvent)]
+        assert len(response_events) == 1
+        text = response_events[0].text
+        assert "<b>health check</b>" in text
+        assert "klaus" in text

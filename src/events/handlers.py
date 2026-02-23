@@ -125,11 +125,16 @@ class AgentHandler:
             if response.content:
                 response_summary = response.content[:500]
 
+                header = self._format_scheduled_header(
+                    event, response.cost, working_dir
+                )
+                formatted_text = f"{header}\n{response.content}"
+
                 for chat_id in event.target_chat_ids:
                     await self.event_bus.publish(
                         AgentResponseEvent(
                             chat_id=chat_id,
-                            text=response.content,
+                            text=formatted_text,
                             originating_event_id=event.id,
                         )
                     )
@@ -139,7 +144,7 @@ class AgentHandler:
                     await self.event_bus.publish(
                         AgentResponseEvent(
                             chat_id=0,
-                            text=response.content,
+                            text=formatted_text,
                             originating_event_id=event.id,
                         )
                     )
@@ -167,6 +172,23 @@ class AgentHandler:
                         "Failed to record job run",
                         job_id=event.job_id,
                     )
+
+    def _format_scheduled_header(
+        self,
+        event: ScheduledEvent,
+        cost: float,
+        working_dir: Path,
+    ) -> str:
+        """Build an HTML header for scheduled job notifications."""
+        from ..bot.utils.html_format import escape_html
+
+        short_dir = Path(working_dir).name
+
+        return (
+            f"\U0001f4cb <b>{escape_html(event.job_name)}</b>\n"
+            f"<i>{escape_html(short_dir)} \u00b7 {event.session_mode}"
+            f" \u00b7 ${cost:.2f}</i>"
+        )
 
     def _build_webhook_prompt(self, event: WebhookEvent) -> str:
         """Build a Claude prompt from a webhook event."""
