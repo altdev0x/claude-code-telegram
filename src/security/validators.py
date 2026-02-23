@@ -132,21 +132,14 @@ class SecurityValidator:
     ]
 
     def __init__(
-        self,
-        approved_directory: Path,
-        disable_security_patterns: bool = False,
-        additional_allowed_paths: Optional[List[Path]] = None,
+        self, approved_directory: Path, disable_security_patterns: bool = False
     ):
         """Initialize validator with approved directory."""
         self.approved_directory = approved_directory.resolve()
         self.disable_security_patterns = disable_security_patterns
-        self.additional_allowed_paths: List[Path] = [
-            p.resolve() for p in (additional_allowed_paths or [])
-        ]
         logger.info(
             "Security validator initialized",
             approved_directory=str(self.approved_directory),
-            additional_allowed_paths=[str(p) for p in self.additional_allowed_paths],
             disable_security_patterns=self.disable_security_patterns,
         )
 
@@ -193,24 +186,15 @@ class SecurityValidator:
             # Resolve path and check boundaries
             target = target.resolve()
 
-            # Ensure target is within approved directory or additional allowed paths
+            # Ensure target is within approved directory
             if not self._is_within_directory(target, self.approved_directory):
-                # Check additional allowed paths
-                allowed = any(
-                    self._is_within_directory(target, extra)
-                    for extra in self.additional_allowed_paths
+                logger.warning(
+                    "Path traversal attempt detected",
+                    requested_path=user_path,
+                    resolved_path=str(target),
+                    approved_directory=str(self.approved_directory),
                 )
-                if not allowed:
-                    logger.warning(
-                        "Path traversal attempt detected",
-                        requested_path=user_path,
-                        resolved_path=str(target),
-                        approved_directory=str(self.approved_directory),
-                        additional_allowed_paths=[
-                            str(p) for p in self.additional_allowed_paths
-                        ],
-                    )
-                    return False, None, "Access denied: path outside approved directory"
+                return False, None, "Access denied: path outside approved directory"
 
             logger.debug(
                 "Path validation successful",

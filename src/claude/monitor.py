@@ -75,7 +75,6 @@ def check_bash_directory_boundary(
     command: str,
     working_directory: Path,
     approved_directory: Path,
-    additional_allowed_paths: Optional[List[Path]] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Check if a bash command's absolute paths stay within the approved directory.
 
@@ -110,9 +109,6 @@ def check_bash_directory_boundary(
 
     # Check each argument for paths outside the boundary
     resolved_approved = approved_directory.resolve()
-    all_allowed = [resolved_approved] + [
-        p.resolve() for p in (additional_allowed_paths or [])
-    ]
 
     for token in tokens[1:]:
         # Skip flags
@@ -127,16 +123,9 @@ def check_bash_directory_boundary(
         else:
             resolved = (working_directory / token).resolve()
 
-        inside_any = False
-        for allowed_dir in all_allowed:
-            try:
-                resolved.relative_to(allowed_dir)
-                inside_any = True
-                break
-            except ValueError:
-                continue
-
-        if not inside_any:
+        try:
+            resolved.relative_to(resolved_approved)
+        except ValueError:
             return False, (
                 f"Directory boundary violation: '{base_command}' targets "
                 f"'{token}' which is outside approved directory "
@@ -329,10 +318,7 @@ class ToolMonitor:
 
             # Check directory boundary for filesystem-modifying commands
             valid, error = check_bash_directory_boundary(
-                command,
-                working_directory,
-                self.config.approved_directory,
-                additional_allowed_paths=self.config.additional_allowed_paths,
+                command, working_directory, self.config.approved_directory
             )
             if not valid:
                 violation = {

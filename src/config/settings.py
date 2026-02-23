@@ -50,15 +50,6 @@ class Settings(BaseSettings):
         None, description="Secret for auth tokens"
     )
 
-    # Additional directories allowed for file operations (beyond APPROVED_DIRECTORY)
-    additional_allowed_paths: Optional[List[Path]] = Field(
-        None,
-        description=(
-            "Comma-separated list of extra directory paths that Read/Write/Edit "
-            "and Bash boundary checks should allow (e.g. ~/.claude,~/notes)"
-        ),
-    )
-
     # Security relaxation (for trusted environments)
     disable_security_patterns: bool = Field(
         False,
@@ -266,34 +257,6 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return [str(item) for item in v]
         return v  # type: ignore[no-any-return]
-
-    @field_validator("additional_allowed_paths", mode="before")
-    @classmethod
-    def parse_additional_allowed_paths(cls, v: Any) -> Optional[List[Path]]:
-        """Parse comma-separated directory paths, resolve to absolute, validate."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            raw = [item.strip() for item in v.split(",") if item.strip()]
-        elif isinstance(v, list):
-            raw = [str(item).strip() for item in v if str(item).strip()]
-        else:
-            return v  # type: ignore[no-any-return]
-        if not raw:
-            return None
-        paths: List[Path] = []
-        for entry in raw:
-            p = Path(entry).expanduser().resolve()
-            if not p.exists():
-                raise ValueError(
-                    f"Additional allowed path does not exist: {entry} (resolved: {p})"
-                )
-            if not p.is_dir():
-                raise ValueError(
-                    f"Additional allowed path is not a directory: {entry} (resolved: {p})"
-                )
-            paths.append(p)
-        return paths
 
     @field_validator("approved_directory")
     @classmethod
