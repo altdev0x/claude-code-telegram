@@ -1,3 +1,5 @@
+> **Fork notice:** This is a private fork of [RichardAtCT/claude-code-telegram](https://github.com/RichardAtCT/claude-code-telegram). Local modifications are documented in [`LOCAL_CHANGES.md`](LOCAL_CHANGES.md).
+
 # Claude Code Telegram Bot
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
