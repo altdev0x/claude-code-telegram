@@ -54,6 +54,7 @@ def create_api_app(
         scheduler_router = create_scheduler_router(
             job_scheduler=job_scheduler,
             verify_token=_verify_admin_token,
+            settings=settings,
         )
         app.include_router(scheduler_router)
 
