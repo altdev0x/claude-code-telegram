@@ -186,6 +186,17 @@ When `ENABLE_PROJECT_THREADS=true`:
 - `PROJECT_THREADS_MODE=group`:
   - behavior remains forum-topic based using `PROJECT_THREADS_CHAT_ID`.
 
+#### Output Verbosity
+
+```bash
+# Controls how much of Claude's background activity is shown in real-time (default: 1, range 0-2)
+# 0 = quiet (only final response, typing indicator still active)
+# 1 = normal (tool names + reasoning snippets shown during execution)
+# 2 = detailed (tool names with input summaries + longer reasoning text)
+# Users can override per-session via /verbose 0|1|2
+VERBOSE_LEVEL=1
+```
+
 #### Monitoring & Logging
 
 ```bash

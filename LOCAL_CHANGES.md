@@ -153,3 +153,23 @@ context into the system prompt without modifying the base prompt.
 - **`[SILENT]` suppression**: If the agent responds with exactly `[SILENT]`, no
   `AgentResponseEvent` is published (no Telegram notification). The run is still
   recorded with `response_summary="[SILENT]"`.
+
+## 13. Session CLI commands and API routes
+
+**Files:** `src/cli/session.py` (new), `src/api/session_routes.py` (new), `src/api/server.py`, `src/main.py`, `src/cli/main.py`
+
+Added `session` CLI subgroup with four commands for session observability:
+
+- `session list` -- list sessions via API
+- `session inspect` -- parse JSONL transcripts locally (works offline)
+- `session send` -- send message through Claude integration via API
+- `session response` -- show message history via API
+
+New API routes under `/api/sessions/`:
+
+- `GET /api/sessions` -- list with dir/user/all filters
+- `POST /api/sessions/send` -- send message, auto-resume sessions
+- `GET /api/sessions/{session_id}/messages` -- message history
+
+`create_api_app()` and `run_api_server()` now accept `claude_integration` parameter.
+Session router is mounted when `claude_integration` is available.

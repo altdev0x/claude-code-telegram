@@ -93,60 +93,72 @@ make release       # Push tag to trigger GitHub release workflow
 
 ```
 src/
-├── config/           # Configuration management (✅ Complete)
-│   ├── __init__.py
-│   ├── settings.py   # Pydantic Settings class
-│   ├── loader.py     # Environment detection and loading
-│   ├── environments.py # Environment-specific overrides
-│   └── features.py   # Feature flag management
-├── bot/              # Telegram bot implementation (✅ Complete)
-│   ├── __init__.py
-│   ├── core.py       # Main bot class
-│   ├── handlers/     # Command and message handlers
-│   ├── middleware/   # Authentication and rate limiting
-│   └── utils/        # Response formatting utilities
-├── claude/           # Claude Code integration (✅ Complete)
-│   ├── __init__.py
-│   ├── integration.py # Subprocess management
-│   ├── parser.py     # Output parsing and formatting
-│   ├── session.py    # Session management
-│   ├── monitor.py    # Tool usage monitoring
-│   ├── facade.py     # High-level integration API
-│   └── exceptions.py # Claude-specific exceptions
-├── storage/          # Database and persistence (✅ Complete)
-│   ├── __init__.py
-│   ├── database.py   # Database connection and migrations
-│   ├── models.py     # Data models with type safety
-│   ├── repositories.py # Repository pattern data access
-│   ├── facade.py     # Storage facade interface
-│   └── session_storage.py # Persistent session storage
-├── security/         # Authentication and security (✅ Complete)
-│   ├── __init__.py
-│   ├── auth.py       # Authentication logic
-│   ├── validators.py # Input validation
-│   └── rate_limiter.py # Rate limiting
-├── utils/            # Utilities and constants (✅ Complete)
-│   ├── __init__.py
-│   └── constants.py  # Application constants
-├── exceptions.py     # Custom exception hierarchy (✅ Complete)
-└── main.py          # Application entry point (✅ Complete)
+├── config/           # Pydantic Settings v2 config, env detection, feature flags
+│   ├── settings.py
+│   ├── loader.py
+│   ├── environments.py
+│   └── features.py
+├── bot/              # Telegram bot implementation
+│   ├── core.py
+│   ├── orchestrator.py   # Routes agentic/classic handlers, project-topic routing
+│   ├── handlers/         # Command, message, and callback handlers
+│   ├── middleware/       # Auth, rate limit, security input validation
+│   ├── features/         # Git integration, file handling, quick actions, session export
+│   └── utils/
+├── claude/           # Claude Code integration
+│   ├── facade.py         # High-level integration API (ClaudeIntegration)
+│   ├── sdk_integration.py # ClaudeSDKManager, async streaming
+│   ├── session.py
+│   ├── monitor.py        # Tool usage monitoring (ToolMonitor)
+│   └── exceptions.py
+├── api/              # FastAPI server (webhook auth, scheduler + session routes)
+│   ├── server.py
+│   ├── auth.py
+│   ├── scheduler_routes.py
+│   └── session_routes.py
+├── cli/              # Click CLI (service, schedule, session commands)
+│   ├── main.py           # CLI group entry point
+│   ├── service.py        # systemd wrappers
+│   ├── schedule.py       # Scheduler HTTP client
+│   └── session.py        # Session observability
+├── events/           # EventBus (async pub/sub), event types, AgentHandler
+├── scheduler/        # APScheduler cron/DateTrigger jobs, SQLite persistence
+├── notifications/    # NotificationService, rate-limited Telegram delivery
+├── projects/         # Multi-project support (registry, thread manager)
+├── storage/          # SQLite via aiosqlite, repository pattern
+│   ├── database.py
+│   ├── models.py
+│   ├── repositories.py
+│   ├── facade.py
+│   └── session_storage.py
+├── security/         # Auth, input validation, rate limiting, audit logging
+├── utils/
+├── exceptions.py
+└── main.py           # Application entry point
 ```
 
 ### Testing Structure
 
 ```
 tests/
-├── unit/             # Unit tests (mirror src structure)
+├── unit/               # Unit tests (mirror src structure)
 │   ├── test_config.py
 │   ├── test_environments.py
 │   ├── test_exceptions.py
-│   ├── test_bot/     # Bot component tests
-│   ├── test_claude/  # Claude integration tests
-│   ├── test_security/ # Security framework tests
-│   └── test_storage/ # Storage layer tests
-├── integration/      # Integration tests (🚧 TODO)
-├── fixtures/         # Test data and fixtures (🚧 TODO)
-└── conftest.py      # Pytest configuration
+│   ├── test_orchestrator.py
+│   ├── test_api/       # API server and route tests
+│   ├── test_bot/       # Bot component tests
+│   ├── test_claude/    # Claude integration tests
+│   ├── test_cli/       # CLI command tests
+│   ├── test_events/    # EventBus and handler tests
+│   ├── test_notifications/ # Notification service tests
+│   ├── test_projects/  # Multi-project support tests
+│   ├── test_scheduler/ # Scheduler tests
+│   ├── test_security/  # Security framework tests
+│   └── test_storage/   # Storage layer tests
+├── integration/        # Integration tests
+├── fixtures/           # Test data and fixtures
+└── conftest.py         # Pytest configuration
 ```
 
 ## Code Standards
@@ -256,76 +268,20 @@ We aim for >80% test coverage. Current coverage:
 - Utilities: 100%
 - Overall: ~85%
 
-## Implementation Status
+## Component Overview
 
-### ✅ Completed Components
+All core components are implemented:
 
-#### TODO-1: Project Structure
-- Complete package layout with proper Python packaging
-- Poetry dependency management with dev/test/prod separation  
-- Makefile with development commands
-- Exception hierarchy with proper inheritance
-- Structured logging with JSON output for production
-- Testing framework with pytest, coverage, and asyncio support
-
-#### TODO-2: Configuration System
-- **Pydantic Settings v2** with environment variable loading
-- **Environment-specific overrides** (development/testing/production)
-- **Feature flags system** for dynamic functionality control
-- **Cross-field validation** with proper error messages
-- **Type-safe configuration** with full mypy compliance
-- **Computed properties** for derived values
-- **Configuration loader** with environment detection
-- **Test utilities** for easy test configuration
-
-#### TODO-3: Authentication & Security Framework
-- Multi-provider authentication system (whitelist and token-based)
-- Rate limiting with token bucket algorithm
-- Comprehensive input validation and path traversal prevention
-- Security audit logging with risk assessment
-- Bot middleware framework for security integration
-
-#### TODO-4: Telegram Bot Core
-- Complete bot implementation with handler registration
-- Command routing system with comprehensive command set
-- Message parsing and intelligent response formatting
-- Inline keyboard support for user interactions
-- Error handling middleware with user-friendly messages
-
-#### TODO-5: Claude Code Integration
-- Async subprocess management for Claude CLI with timeout handling
-- Response streaming and parsing for real-time updates
-- Session state persistence with context maintenance
-- Tool usage monitoring and security validation
-- Cost tracking and usage analytics
-
-#### TODO-6: Storage Layer
-- SQLite database with complete schema and foreign key relationships
-- Repository pattern implementation with clean data access
-- Migration system with schema versioning
-- Analytics and reporting with user/admin dashboards
-- Persistent session storage replacing in-memory storage
-
-### 🚧 Next Implementation Steps
-
-#### TODO-7: Advanced Features (Current Priority)
-- File upload handling with security validation
-- Git integration for repository operations
-- Quick actions system for common workflows
-- Session export features (Markdown, JSON, HTML)
-- Image/screenshot support and processing
-
-#### TODO-8: Complete Testing Suite
-- Integration tests for end-to-end workflows
-- Performance testing and benchmarking
-- Security testing and penetration testing
-- Load testing for concurrent users
-
-#### TODO-9: Deployment & Documentation
-- Docker configuration and containerization
-- Kubernetes manifests for production deployment
-- Complete user and admin documentation
-- API documentation and developer guides
+- **Configuration**: Pydantic Settings v2, environment overrides, feature flags, cross-field validation
+- **Security**: Multi-provider auth (whitelist + token), rate limiting, input validation, path traversal prevention, audit logging
+- **Telegram Bot**: Agentic and classic mode handlers, middleware chain, inline keyboards
+- **Claude Integration**: SDK streaming, session auto-resume, tool monitoring, cost tracking
+- **Storage**: SQLite with migrations, repository pattern, persistent sessions
+- **API Server**: FastAPI webhooks, scheduler CRUD, session observability routes
+- **CLI**: Click subcommands for service management, scheduling, session inspection
+- **Events**: EventBus pub/sub, webhook and scheduled event handling
+- **Scheduler**: APScheduler cron + DateTrigger jobs, execution history, session modes
+- **Notifications**: Rate-limited Telegram delivery for proactive messages
 
 ## Development Environment Configuration
 
