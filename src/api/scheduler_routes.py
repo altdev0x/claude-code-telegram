@@ -76,14 +76,12 @@ class TriggerJobResponse(BaseModel):
 def create_scheduler_router(
     job_scheduler: Any,
     verify_token: Any,
-    settings: Any = None,
 ) -> APIRouter:
     """Create the scheduler API router.
 
     Args:
         job_scheduler: JobScheduler instance.
         verify_token: FastAPI dependency for Bearer token verification.
-        settings: Optional Settings instance for resolving defaults.
     """
     router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 
@@ -99,21 +97,6 @@ def create_scheduler_router(
             Path(request.working_directory) if request.working_directory else None
         )
 
-        # Auto-populate created_by for resume-mode jobs so
-        # _find_resumable_session can look up the correct user's sessions.
-        created_by = request.created_by
-        if (
-            not created_by
-            and request.session_mode == "resume"
-            and settings
-            and settings.allowed_users
-        ):
-            created_by = settings.allowed_users[0]
-            logger.info(
-                "Auto-populated created_by for resume-mode job",
-                created_by=created_by,
-            )
-
         try:
             job_id = await job_scheduler.add_job(
                 job_name=request.job_name,
@@ -122,7 +105,7 @@ def create_scheduler_router(
                 target_chat_ids=request.target_chat_ids,
                 working_directory=working_dir,
                 skill_name=request.skill_name,
-                created_by=created_by,
+                created_by=request.created_by,
                 session_mode=request.session_mode,
                 trigger_type=request.trigger_type,
                 run_date=request.run_date,

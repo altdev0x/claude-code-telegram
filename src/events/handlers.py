@@ -105,16 +105,6 @@ class AgentHandler:
         working_dir = event.working_directory or self.default_working_directory
         force_new = event.session_mode == "isolated"
 
-        # For resume-mode cron jobs, use the job creator's user_id so
-        # _find_resumable_session looks up the correct user's sessions.
-        # Fall back to default_user_id for isolated mode or when
-        # created_by is not set.
-        user_id = (
-            event.created_by
-            if event.session_mode == "resume" and event.created_by
-            else self.default_user_id
-        )
-
         fired_at = datetime.now(UTC)
         success = False
         error_message: Optional[str] = None
@@ -125,7 +115,7 @@ class AgentHandler:
             response = await self.claude.run_command(
                 prompt=prompt,
                 working_directory=working_dir,
-                user_id=user_id,
+                user_id=self.default_user_id,
                 force_new=force_new,
                 ephemeral=True,
             )
