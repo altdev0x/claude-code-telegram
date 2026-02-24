@@ -80,17 +80,14 @@ def test_security_relaxation_settings_defaults_and_overrides():
             approved_directory=tmp_dir,
         )
         assert defaults.disable_security_patterns is False
-        assert defaults.disable_tool_validation is False
 
         overridden = Settings(
             telegram_bot_token="test_token",
             telegram_bot_username="test_bot",
             approved_directory=tmp_dir,
             disable_security_patterns=True,
-            disable_tool_validation=True,
         )
         assert overridden.disable_security_patterns is True
-        assert overridden.disable_tool_validation is True
 
 
 def test_approved_directory_validation_nonexistent():

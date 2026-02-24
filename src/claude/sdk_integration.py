@@ -23,11 +23,8 @@ from claude_agent_sdk import (
     CLIJSONDecodeError,
     CLINotFoundError,
     Message,
-    PermissionResultAllow,
-    PermissionResultDeny,
     ProcessError,
     ResultMessage,
-    ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -43,7 +40,6 @@ from .exceptions import (
     ClaudeProcessError,
     ClaudeTimeoutError,
 )
-from .monitor import check_bash_directory_boundary
 
 logger = structlog.get_logger()
 
@@ -133,45 +129,6 @@ class StreamUpdate:
     metadata: Optional[Dict] = None
 
 
-def _make_can_use_tool_callback(
-    working_directory: Path,
-    approved_directory: Path,
-) -> Any:
-    """Create a can_use_tool callback for SDK-level bash boundary enforcement.
-
-    File tool permissions are handled by CLI deny rules in
-    ``{cwd}/.claude/settings.json`` (loaded via ``setting_sources=["project"]``).
-    This callback only enforces bash directory boundaries.
-    """
-    _BASH_TOOLS = {"Bash", "bash", "shell"}
-
-    async def can_use_tool(
-        tool_name: str,
-        tool_input: Dict[str, Any],
-        context: ToolPermissionContext,
-    ) -> Any:
-        if tool_name in _BASH_TOOLS:
-            command = tool_input.get("command", "")
-            if command:
-                valid, error = check_bash_directory_boundary(
-                    command, working_directory, approved_directory
-                )
-                if not valid:
-                    logger.warning(
-                        "can_use_tool denied bash command",
-                        tool_name=tool_name,
-                        command=command,
-                        error=error,
-                    )
-                    return PermissionResultDeny(
-                        message=error or "Bash directory boundary violation"
-                    )
-
-        return PermissionResultAllow()
-
-    return can_use_tool
-
-
 class ClaudeSDKManager:
     """Manage Claude Code SDK integration."""
 
@@ -251,9 +208,9 @@ class ClaudeSDKManager:
                 disallowed_tools=self.config.claude_disallowed_tools,
                 cli_path=cli_path,
                 setting_sources=["project"],
-                # No sandbox kwarg — sandbox runtime doesn't exist on this
-                # system.  Bash goes through can_use_tool for boundary
-                # enforcement; file tools use CLI deny rules.
+                # Permission enforcement is handled entirely by the CLI via
+                # {cwd}/.claude/settings.json (dontAsk mode, deny rules,
+                # and PreToolUse hooks for bash/file boundary checking).
                 system_prompt=self._build_system_prompt(working_directory, session_id),
                 stderr=_stderr_callback,
             )
@@ -265,12 +222,6 @@ class ClaudeSDKManager:
                     "MCP servers configured",
                     mcp_config_path=str(self.config.mcp_config_path),
                 )
-
-            # Wire can_use_tool callback for bash boundary enforcement
-            options.can_use_tool = _make_can_use_tool_callback(
-                working_directory=working_directory,
-                approved_directory=self.config.approved_directory,
-            )
 
             # Resume previous session if we have a session_id.
             # Only set `resume` — do NOT set `continue_conversation`.

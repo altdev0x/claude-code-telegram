@@ -8,11 +8,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
-    PermissionResultAllow,
-    PermissionResultDeny,
     ResultMessage,
     TextBlock,
-    ToolPermissionContext,
     ToolResultBlock,
     UserMessage,
 )
@@ -22,7 +19,6 @@ from src.claude.sdk_integration import (
     ClaudeResponse,
     ClaudeSDKManager,
     StreamUpdate,
-    _make_can_use_tool_callback,
 )
 from src.config.settings import Settings
 
@@ -377,7 +373,7 @@ class TestClaudeSDKManager:
 
 
 class TestClaudeAgentOptionsWiring:
-    """Test system_prompt, allowed/disallowed tools, and sandbox absence on options."""
+    """Test system_prompt, allowed/disallowed tools, and sandbox absence on ClaudeAgentOptions."""
 
     async def test_system_prompt_uses_preset_dict(self, tmp_path):
         """Test that system_prompt is a Claude Code preset dict."""
@@ -562,86 +558,6 @@ class TestClaudeMCPErrors:
                 )
 
         assert "MCP" in str(exc_info.value)
-
-
-class TestCanUseToolCallback:
-    """Test the _make_can_use_tool_callback factory (bash-only enforcement)."""
-
-    @pytest.fixture
-    def approved_dir(self, tmp_path):
-        return tmp_path
-
-    @pytest.fixture
-    def working_dir(self, tmp_path):
-        return tmp_path / "project"
-
-    @pytest.fixture
-    def callback(self, working_dir, approved_dir):
-        return _make_can_use_tool_callback(
-            working_directory=working_dir,
-            approved_directory=approved_dir,
-        )
-
-    @pytest.fixture
-    def context(self):
-        return ToolPermissionContext()
-
-    async def test_allows_bash_inside_boundary(self, callback, context, approved_dir):
-        """Bash command targeting inside approved dir is allowed."""
-        result = await callback(
-            "Bash", {"command": f"mkdir -p {approved_dir}/subdir"}, context
-        )
-        assert isinstance(result, PermissionResultAllow)
-
-    async def test_denies_bash_outside_boundary(self, callback, context):
-        """Bash command targeting outside approved dir is denied."""
-        result = await callback("Bash", {"command": "mkdir -p /tmp/evil"}, context)
-        assert isinstance(result, PermissionResultDeny)
-        assert "boundary violation" in result.message.lower()
-
-    async def test_allows_bash_read_only_command(self, callback, context):
-        """Read-only bash commands pass through even with external paths."""
-        result = await callback("Bash", {"command": "cat /etc/hosts"}, context)
-        assert isinstance(result, PermissionResultAllow)
-
-    async def test_allows_non_bash_tools(self, callback, context):
-        """Non-bash tools (file tools, search tools, etc.) get PermissionResultAllow."""
-        for tool_name, tool_input in [
-            ("Read", {"file_path": "/etc/passwd"}),
-            ("Write", {"file_path": "../../etc/passwd"}),
-            ("Grep", {"pattern": "foo"}),
-            ("Glob", {"pattern": "*.py"}),
-            ("NotebookEdit", {"path": "notebook.ipynb"}),
-        ]:
-            result = await callback(tool_name, tool_input, context)
-            assert isinstance(
-                result, PermissionResultAllow
-            ), f"Expected Allow for {tool_name}"
-
-    async def test_callback_always_wired(self, tmp_path):
-        """can_use_tool callback is always set on options (no SecurityValidator needed)."""
-        config = Settings(
-            telegram_bot_token="test:token",
-            telegram_bot_username="testbot",
-            approved_directory=tmp_path,
-            claude_timeout_seconds=2,
-        )
-        manager = ClaudeSDKManager(config)
-
-        captured_options = []
-        mock_factory = _mock_client_factory(
-            _make_assistant_message("ok"),
-            _make_result_message(total_cost_usd=0.01),
-            capture_options=captured_options,
-        )
-
-        with patch(
-            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
-        ):
-            await manager.execute_command(prompt="Test", working_directory=tmp_path)
-
-        assert len(captured_options) == 1
-        assert captured_options[0].can_use_tool is not None
 
 
 class TestPermissionDeniedStream:
