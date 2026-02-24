@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from .schedule import schedule
 from .service import logs, restart, start, status, stop
+from .session import session
 
 # Load project .env so CLI commands pick up WEBHOOK_API_SECRET, API_SERVER_PORT, etc.
 # Does not override variables already set in the environment.
@@ -48,3 +49,6 @@ cli.add_command(logs)
 
 # Register schedule group
 cli.add_command(schedule)
+
+# Register session group
+cli.add_command(session)

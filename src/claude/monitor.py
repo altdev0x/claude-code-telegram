@@ -11,11 +11,6 @@ from typing import Optional, Set, Tuple
 
 import structlog
 
-# Subdirectories under ~/.claude/ that Claude Code uses internally.
-# File operations targeting these paths are allowed even when they fall
-# outside the project's approved directory.
-_CLAUDE_INTERNAL_SUBDIRS: Set[str] = {"plans", "todos", "skills", "settings.json"}
-
 logger = structlog.get_logger()
 
 # Commands that modify the filesystem or change context and should have paths checked
@@ -159,36 +154,6 @@ def check_bash_directory_boundary(
                 continue
 
     return True, None
-
-
-def _is_claude_internal_path(file_path: str) -> bool:
-    """Check whether *file_path* points inside the ``~/.claude/`` directory.
-
-    Claude Code keeps internal state (plan-mode drafts, todo lists, etc.)
-    under ``$HOME/.claude/``.  These paths are outside the project's
-    ``approved_directory`` but are safe to read/write because they are
-    controlled entirely by Claude Code itself.
-
-    Only the specific subdirectories listed in ``_CLAUDE_INTERNAL_SUBDIRS``
-    are allowed; arbitrary files directly under ``~/.claude/`` are not.
-    """
-    try:
-        resolved = Path(file_path).resolve()
-        home = Path.home().resolve()
-        claude_dir = home / ".claude"
-
-        # Path must be inside ~/.claude/
-        try:
-            rel = resolved.relative_to(claude_dir)
-        except ValueError:
-            return False
-
-        # Must be in one of the known subdirectories (or a known file)
-        top_part = rel.parts[0] if rel.parts else ""
-        return top_part in _CLAUDE_INTERNAL_SUBDIRS
-
-    except Exception:
-        return False
 
 
 def _is_within_directory(path: Path, directory: Path) -> bool:

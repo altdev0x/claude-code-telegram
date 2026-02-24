@@ -62,13 +62,15 @@ context.bot_data["security_validator"]
 
 ## Security Model
 
-5-layer defense: authentication (whitelist/token) -> directory isolation (APPROVED_DIRECTORY + path traversal prevention) -> input validation (blocks `..`, `;`, `&&`, `$()`, etc.) -> rate limiting (token bucket) -> audit logging.
+5-layer defense: authentication (whitelist/token) → CLI permission enforcement (`dontAsk` mode + deny rules + PreToolUse hook) → Telegram input validation (`SecurityValidator`) → rate limiting (token bucket) → audit logging.
 
-- `SecurityValidator` blocks access to secrets (`.env`, `.ssh`, `id_rsa`, `.pem`) and dangerous shell patterns. Relaxed with `DISABLE_SECURITY_PATTERNS=true`.
-- `ToolMonitor` validates Claude's tool calls against allowlist/disallowlist, file path boundaries, and dangerous bash patterns. Bypassed with `DISABLE_TOOL_VALIDATION=true`.
-- Webhook authentication: GitHub HMAC-SHA256 signature verification, generic Bearer token, atomic deduplication via `webhook_events` table.
+- **CLI permissions**: Each agent workspace has a `.claude/settings.json` with `dontAsk` mode. File tools are restricted to the working directory (`Read(./**)`, `Edit(./**)`). Sensitive bash commands are denied. A `PreToolUse` bash-boundary hook checks all path tokens in bash commands against the working directory.
+- **SDK `can_use_tool` callback**: Simplified to bash-only boundary checking as defense-in-depth (only fires in non-`dontAsk` modes).
+- **`SecurityValidator`**: Validates Telegram user inputs at the middleware layer (path traversal, command injection, secret file access). Relaxed with `DISABLE_SECURITY_PATTERNS=true`.
+- **Permission violations**: Denied tool calls return `ToolResultBlock(is_error=True)` in the SDK stream, extracted as `StreamUpdate(type="permission_denied")` and shown in Telegram.
+- **Webhook authentication**: GitHub HMAC-SHA256 signature verification, generic Bearer token, atomic deduplication via `webhook_events` table.
 
-See [Security Policy](../SECURITY.md) for the full threat model, configuration, and production checklist.
+See [Security Policy](../SECURITY.md) for the full threat model, and [Permission Model](permission-refactoring.md) for the detailed permission architecture.
 
 ## Configuration
 

@@ -107,9 +107,9 @@ src/
 │   └── utils/
 ├── claude/           # Claude Code integration
 │   ├── facade.py         # High-level integration API (ClaudeIntegration)
-│   ├── sdk_integration.py # ClaudeSDKManager, async streaming
+│   ├── sdk_integration.py # ClaudeSDKManager, async streaming, can_use_tool callback
 │   ├── session.py
-│   ├── monitor.py        # Tool usage monitoring (ToolMonitor)
+│   ├── monitor.py        # Bash directory boundary checking utility
 │   └── exceptions.py
 ├── api/              # FastAPI server (webhook auth, scheduler + session routes)
 │   ├── server.py

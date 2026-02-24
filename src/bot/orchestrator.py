@@ -89,6 +89,7 @@ _TOOL_ICONS: Dict[str, str] = {
     "NotebookEdit": "\U0001f4d3",
     "TodoRead": "\u2611\ufe0f",
     "TodoWrite": "\u2611\ufe0f",
+    "Permission": "\U0001f6ab",
 }
 
 
@@ -570,6 +571,11 @@ class MessageOrchestrator:
                 else:
                     # Level 1: one short line
                     lines.append(f"\U0001f4ac {snippet[:80]}")
+            elif kind == "denied":
+                # Permission denial from CLI deny rules
+                icon = _tool_icon("Permission")
+                detail = entry.get("detail", "denied")
+                lines.append(f"{icon} {detail}")
             else:
                 # Tool call
                 icon = _tool_icon(entry["name"])
@@ -662,6 +668,16 @@ class MessageOrchestrator:
                     name = tc.get("name", "unknown")
                     detail = self._summarize_tool_input(name, tc.get("input", {}))
                     tool_log.append({"kind": "tool", "name": name, "detail": detail})
+
+            # Capture permission denials from CLI deny rules
+            if update_obj.type == "permission_denied" and update_obj.content:
+                tool_log.append(
+                    {
+                        "kind": "denied",
+                        "name": "Permission",
+                        "detail": update_obj.content[:120],
+                    }
+                )
 
             # Capture assistant text (reasoning / commentary)
             if update_obj.type == "assistant" and update_obj.content:

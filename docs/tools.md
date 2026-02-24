@@ -107,14 +107,18 @@ DISABLE_TOOL_VALIDATION=true
 
 ### Security Layers
 
-Even when a tool is allowed, additional security checks apply. The exact checks depend on the run mode:
+Tool access is enforced by the Claude Code CLI's native permission system, configured per agent workspace:
 
-1. **File path validation** (all modes) — `Read`, `Write`, `Edit`, and `MultiEdit` operations must target paths within the `APPROVED_DIRECTORY`. Path traversal attempts are blocked.
+1. **CLI permission rules** — Each agent workspace has a `.claude/settings.json` with `dontAsk` mode. Only tools listed in the `allow` list can be used. File tools (`Read`, `Write`, `Edit`, `MultiEdit`) are restricted to the working directory via path patterns (e.g., `Read(./**)`, `Edit(./**)`).
 
-2. **Bash command validation** (classic mode only) — Dangerous patterns (`rm -rf`, `sudo`, `chmod 777`, pipes, redirections, subshells) are blocked by default. Filesystem-modifying commands (`mkdir`, `cp`, `mv`, `rm`, etc.) must target paths within the approved directory. This layer is **not active in agentic mode**, which relies on OS-level sandboxing instead.
+2. **Deny rules** — Sensitive bash commands (`sudo`, `systemctl`, `kill`, etc.) and self-modification of `.claude/settings.json` are explicitly denied. Deny rules take precedence over allow rules.
 
-3. **Bash directory boundary checks** (all modes) — Filesystem-modifying commands are checked to ensure their target paths stay within the approved directory, regardless of run mode.
+3. **Bash boundary hook** — A `PreToolUse` hook (`bash-boundary.sh`) fires on every `Bash` tool call and checks all path-like tokens against the working directory boundary. This closes the bypass where `Bash(*)` in the allow list would otherwise permit reading/writing files outside the work dir via shell commands.
 
-4. **Audit logging** (all modes) — All tool calls and security violations are recorded for review.
+4. **SDK `can_use_tool` callback** — Defense-in-depth bash boundary checking via `check_bash_directory_boundary()`. Only fires in non-`dontAsk` modes.
 
-See [Security](../SECURITY.md) for the full security model.
+5. **Telegram input validation** — `SecurityValidator` checks user inputs at the middleware layer before they reach Claude (path traversal, command injection patterns).
+
+6. **Audit logging** — All tool calls and security violations are recorded for review.
+
+See [Security](../SECURITY.md) for the full security model and [Permission Model](permission-refactoring.md) for the detailed permission architecture.

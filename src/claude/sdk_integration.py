@@ -28,22 +28,22 @@ from claude_agent_sdk import (
     ProcessError,
     ResultMessage,
     ToolPermissionContext,
+    ToolResultBlock,
     ToolUseBlock,
     UserMessage,
 )
 from claude_agent_sdk._errors import MessageParseError
-from claude_agent_sdk.types import SystemPromptPreset
 from claude_agent_sdk._internal.message_parser import parse_message
+from claude_agent_sdk.types import SystemPromptPreset
 
 from ..config.settings import Settings
-from ..security.validators import SecurityValidator
 from .exceptions import (
     ClaudeMCPError,
     ClaudeParsingError,
     ClaudeProcessError,
     ClaudeTimeoutError,
 )
-from .monitor import _is_claude_internal_path, check_bash_directory_boundary
+from .monitor import check_bash_directory_boundary
 
 logger = structlog.get_logger()
 
@@ -134,16 +134,15 @@ class StreamUpdate:
 
 
 def _make_can_use_tool_callback(
-    security_validator: SecurityValidator,
     working_directory: Path,
     approved_directory: Path,
 ) -> Any:
-    """Create a can_use_tool callback for SDK-level tool permission validation.
+    """Create a can_use_tool callback for SDK-level bash boundary enforcement.
 
-    The callback validates file path boundaries and bash directory boundaries
-    *before* the SDK executes the tool, providing preventive security enforcement.
+    File tool permissions are handled by CLI deny rules in
+    ``{cwd}/.claude/settings.json`` (loaded via ``setting_sources=["project"]``).
+    This callback only enforces bash directory boundaries.
     """
-    _FILE_TOOLS = {"Write", "Edit", "Read", "create_file", "edit_file", "read_file"}
     _BASH_TOOLS = {"Bash", "bash", "shell"}
 
     async def can_use_tool(
@@ -151,27 +150,6 @@ def _make_can_use_tool_callback(
         tool_input: Dict[str, Any],
         context: ToolPermissionContext,
     ) -> Any:
-        # File path validation
-        if tool_name in _FILE_TOOLS:
-            file_path = tool_input.get("file_path") or tool_input.get("path")
-            if file_path:
-                # Allow Claude Code internal paths (~/.claude/plans/, etc.)
-                if _is_claude_internal_path(file_path):
-                    return PermissionResultAllow()
-
-                valid, _resolved, error = security_validator.validate_path(
-                    file_path, working_directory
-                )
-                if not valid:
-                    logger.warning(
-                        "can_use_tool denied file operation",
-                        tool_name=tool_name,
-                        file_path=file_path,
-                        error=error,
-                    )
-                    return PermissionResultDeny(message=error or "Invalid file path")
-
-        # Bash directory boundary validation
         if tool_name in _BASH_TOOLS:
             command = tool_input.get("command", "")
             if command:
@@ -200,11 +178,9 @@ class ClaudeSDKManager:
     def __init__(
         self,
         config: Settings,
-        security_validator: Optional[SecurityValidator] = None,
     ):
         """Initialize SDK manager with configuration."""
         self.config = config
-        self.security_validator = security_validator
 
         # Try to find and update PATH for Claude CLI
         if not update_path_for_claude(config.claude_cli_path):
@@ -275,11 +251,9 @@ class ClaudeSDKManager:
                 disallowed_tools=self.config.claude_disallowed_tools,
                 cli_path=cli_path,
                 setting_sources=["project"],
-                sandbox={
-                    "enabled": self.config.sandbox_enabled,
-                    "autoAllowBashIfSandboxed": True,
-                    "excludedCommands": self.config.sandbox_excluded_commands or [],
-                },
+                # No sandbox kwarg — sandbox runtime doesn't exist on this
+                # system.  Bash goes through can_use_tool for boundary
+                # enforcement; file tools use CLI deny rules.
                 system_prompt=self._build_system_prompt(working_directory, session_id),
                 stderr=_stderr_callback,
             )
@@ -292,13 +266,11 @@ class ClaudeSDKManager:
                     mcp_config_path=str(self.config.mcp_config_path),
                 )
 
-            # Wire can_use_tool callback for preventive tool validation
-            if self.security_validator:
-                options.can_use_tool = _make_can_use_tool_callback(
-                    security_validator=self.security_validator,
-                    working_directory=working_directory,
-                    approved_directory=self.config.approved_directory,
-                )
+            # Wire can_use_tool callback for bash boundary enforcement
+            options.can_use_tool = _make_can_use_tool_callback(
+                working_directory=working_directory,
+                approved_directory=self.config.approved_directory,
+            )
 
             # Resume previous session if we have a session_id.
             # Only set `resume` — do NOT set `continue_conversation`.
@@ -566,7 +538,21 @@ class ClaudeSDKManager:
 
             elif isinstance(message, UserMessage):
                 content = getattr(message, "content", "")
-                if content:
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, ToolResultBlock) and block.is_error:
+                            error_text = (
+                                block.content
+                                if isinstance(block.content, str)
+                                else str(block.content)
+                            )
+                            update = StreamUpdate(
+                                type="permission_denied",
+                                content=error_text,
+                                metadata={"tool_use_id": block.tool_use_id},
+                            )
+                            await stream_callback(update)
+                elif content:
                     update = StreamUpdate(
                         type="user",
                         content=content,

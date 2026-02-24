@@ -24,6 +24,7 @@ def create_api_app(
     settings: Settings,
     db_manager: Optional[DatabaseManager] = None,
     job_scheduler: Optional[Any] = None,
+    claude_integration: Optional[Any] = None,
 ) -> FastAPI:
     """Create the FastAPI application."""
     app = FastAPI(
@@ -55,6 +56,31 @@ def create_api_app(
             verify_token=_verify_admin_token,
         )
         app.include_router(scheduler_router)
+
+    # Mount session routes if claude_integration is available
+    if claude_integration and db_manager:
+        from .session_routes import create_session_router
+
+        def _verify_session_token(
+            authorization: Optional[str] = Header(None),
+        ) -> None:
+            """Verify Bearer token for session API endpoints."""
+            secret = settings.webhook_api_secret
+            if not secret:
+                raise HTTPException(
+                    status_code=500,
+                    detail="WEBHOOK_API_SECRET not configured",
+                )
+            if not verify_shared_secret(authorization, secret):
+                raise HTTPException(status_code=401, detail="Invalid authorization")
+
+        session_router = create_session_router(
+            claude_integration=claude_integration,
+            db_manager=db_manager,
+            settings=settings,
+            verify_token=_verify_session_token,
+        )
+        app.include_router(session_router)
 
     @app.get("/health")
     async def health_check() -> Dict[str, str]:
@@ -200,6 +226,7 @@ async def run_api_server(
     settings: Settings,
     db_manager: Optional[DatabaseManager] = None,
     job_scheduler: Optional[Any] = None,
+    claude_integration: Optional[Any] = None,
 ) -> None:
     """Run the FastAPI server using uvicorn.
 
@@ -207,7 +234,9 @@ async def run_api_server(
     """
     import uvicorn
 
-    app = create_api_app(event_bus, settings, db_manager, job_scheduler)
+    app = create_api_app(
+        event_bus, settings, db_manager, job_scheduler, claude_integration
+    )
 
     config = uvicorn.Config(
         app=app,

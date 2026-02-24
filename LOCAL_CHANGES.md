@@ -2,26 +2,30 @@
 
 Changes made to this fork on top of upstream `RichardAtCT/claude-code-telegram`.
 
-## 1. Add `"skills"` to `_CLAUDE_INTERNAL_SUBDIRS`
+## 1. CLI-native permission enforcement
 
-**File:** `src/claude/monitor.py`
+**Files:** `src/claude/sdk_integration.py`, `src/claude/monitor.py`, `src/config/settings.py`, `src/main.py`, `src/bot/orchestrator.py`
 
-Added `"skills"` to the `_CLAUDE_INTERNAL_SUBDIRS` allowlist so that Claude Code
-can access symlinked skills under `~/.claude/skills/` without being blocked by
-directory boundary enforcement.
+Replaced the SDK-layer permission model with CLI-native enforcement:
 
-```python
-_CLAUDE_INTERNAL_SUBDIRS: Set[str] = {"plans", "todos", "skills", "settings.json"}
-```
+- **Removed**: Sandbox config from `ClaudeAgentOptions` (no runtime on Raspberry Pi)
+- **Removed**: `SecurityValidator` dependency from `ClaudeSDKManager` and `can_use_tool` callback
+- **Removed**: `_is_claude_internal_path()`, `_CLAUDE_INTERNAL_SUBDIRS` from `monitor.py`
+- **Removed**: `sandbox_enabled`, `sandbox_excluded_commands` from `Settings`
+- **Simplified**: `can_use_tool` callback to bash-only boundary checking
+- **Added**: `ToolResultBlock(is_error=True)` extraction → `StreamUpdate(type="permission_denied")`
+- **Added**: Permission denial display in Telegram verbose output (🚫 icon)
+
+Each agent workspace has a `.claude/settings.json` with `dontAsk` mode, explicit
+allow/deny rules, and a `PreToolUse` bash-boundary hook. See [Permission Model](docs/permission-refactoring.md).
 
 ## 2. Preserve `setting_sources=["project"]`
 
-**File:** `src/claude/sdk_integration.py` (line 257)
+**File:** `src/claude/sdk_integration.py`
 
 The SDK is configured with `setting_sources=["project"]` to load project-level
-settings (from `.claude/settings.json` in the approved directory). This is an
-upstream setting that must not be removed — it enables per-project tool
-configuration and permissions.
+settings (from `.claude/settings.json` in the agent's working directory). This is
+critical for the CLI-native permission model — it loads the agent's deny/allow rules.
 
 ## 3. System prompt uses Claude Code preset with custom append
 

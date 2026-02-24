@@ -3,7 +3,7 @@
 import asyncio
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from claude_agent_sdk import (
@@ -13,6 +13,8 @@ from claude_agent_sdk import (
     ResultMessage,
     TextBlock,
     ToolPermissionContext,
+    ToolResultBlock,
+    UserMessage,
 )
 from claude_agent_sdk.types import StreamEvent
 
@@ -374,27 +376,19 @@ class TestClaudeSDKManager:
         )
 
 
-class TestClaudeSandboxSettings:
-    """Test sandbox and system_prompt settings on ClaudeAgentOptions."""
+class TestClaudeAgentOptionsWiring:
+    """Test system_prompt, allowed/disallowed tools, and sandbox absence on options."""
 
-    @pytest.fixture
-    def config(self, tmp_path):
-        """Create test config with sandbox enabled."""
-        return Settings(
+    async def test_system_prompt_uses_preset_dict(self, tmp_path):
+        """Test that system_prompt is a Claude Code preset dict."""
+        config = Settings(
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
             claude_timeout_seconds=2,
-            sandbox_enabled=True,
-            sandbox_excluded_commands=["git", "npm"],
         )
+        manager = ClaudeSDKManager(config)
 
-    @pytest.fixture
-    def sdk_manager(self, config):
-        return ClaudeSDKManager(config)
-
-    async def test_sandbox_settings_passed_to_options(self, sdk_manager, tmp_path):
-        """Test that sandbox settings are set on ClaudeAgentOptions."""
         captured_options = []
         mock_factory = _mock_client_factory(
             _make_assistant_message("Test response"),
@@ -405,32 +399,7 @@ class TestClaudeSandboxSettings:
         with patch(
             "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
         ):
-            await sdk_manager.execute_command(
-                prompt="Test prompt",
-                working_directory=tmp_path,
-            )
-
-        assert len(captured_options) == 1
-        opts = captured_options[0]
-        assert opts.sandbox == {
-            "enabled": True,
-            "autoAllowBashIfSandboxed": True,
-            "excludedCommands": ["git", "npm"],
-        }
-
-    async def test_system_prompt_uses_preset_dict(self, sdk_manager, tmp_path):
-        """Test that system_prompt is a Claude Code preset dict."""
-        captured_options = []
-        mock_factory = _mock_client_factory(
-            _make_assistant_message("Test response"),
-            _make_result_message(total_cost_usd=0.01),
-            capture_options=captured_options,
-        )
-
-        with patch(
-            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
-        ):
-            await sdk_manager.execute_command(
+            await manager.execute_command(
                 prompt="Test prompt",
                 working_directory=tmp_path,
             )
@@ -501,14 +470,13 @@ class TestClaudeSandboxSettings:
         assert len(captured_options) == 1
         assert captured_options[0].allowed_tools == ["Read", "Write", "Bash"]
 
-    async def test_sandbox_disabled_when_config_false(self, tmp_path):
-        """Test sandbox is disabled when sandbox_enabled=False."""
+    async def test_no_sandbox_in_options(self, tmp_path):
+        """Test that sandbox is not set on ClaudeAgentOptions."""
         config = Settings(
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
             claude_timeout_seconds=2,
-            sandbox_enabled=False,
         )
         manager = ClaudeSDKManager(config)
 
@@ -528,7 +496,9 @@ class TestClaudeSandboxSettings:
             )
 
         assert len(captured_options) == 1
-        assert captured_options[0].sandbox["enabled"] is False
+        # sandbox should be the default (empty/not set), not explicitly configured
+        opts = captured_options[0]
+        assert not getattr(opts, "sandbox", None)
 
 
 class TestClaudeMCPErrors:
@@ -595,7 +565,7 @@ class TestClaudeMCPErrors:
 
 
 class TestCanUseToolCallback:
-    """Test the _make_can_use_tool_callback factory and its behavior."""
+    """Test the _make_can_use_tool_callback factory (bash-only enforcement)."""
 
     @pytest.fixture
     def approved_dir(self, tmp_path):
@@ -606,16 +576,8 @@ class TestCanUseToolCallback:
         return tmp_path / "project"
 
     @pytest.fixture
-    def security_validator(self):
-        """Create a mock SecurityValidator."""
-        validator = MagicMock()
-        validator.validate_path = MagicMock(return_value=(True, Path("/ok"), None))
-        return validator
-
-    @pytest.fixture
-    def callback(self, security_validator, working_dir, approved_dir):
+    def callback(self, working_dir, approved_dir):
         return _make_can_use_tool_callback(
-            security_validator=security_validator,
             working_directory=working_dir,
             approved_directory=approved_dir,
         )
@@ -624,28 +586,7 @@ class TestCanUseToolCallback:
     def context(self):
         return ToolPermissionContext()
 
-    async def test_allows_safe_file_read(self, callback, context, security_validator):
-        """File read with a valid path is allowed."""
-        result = await callback("Read", {"file_path": "src/main.py"}, context)
-        assert isinstance(result, PermissionResultAllow)
-        security_validator.validate_path.assert_called_once()
-
-    async def test_denies_invalid_file_path(
-        self, callback, context, security_validator
-    ):
-        """File write with a path that fails validation is denied."""
-        security_validator.validate_path.return_value = (
-            False,
-            None,
-            "Path traversal detected",
-        )
-        result = await callback("Write", {"file_path": "../../etc/passwd"}, context)
-        assert isinstance(result, PermissionResultDeny)
-        assert "Path traversal" in result.message
-
-    async def test_allows_bash_inside_boundary(
-        self, callback, context, working_dir, approved_dir
-    ):
+    async def test_allows_bash_inside_boundary(self, callback, context, approved_dir):
         """Bash command targeting inside approved dir is allowed."""
         result = await callback(
             "Bash", {"command": f"mkdir -p {approved_dir}/subdir"}, context
@@ -658,51 +599,27 @@ class TestCanUseToolCallback:
         assert isinstance(result, PermissionResultDeny)
         assert "boundary violation" in result.message.lower()
 
-    async def test_allows_unknown_tool(self, callback, context):
-        """Tools not in file/bash sets are allowed through."""
-        result = await callback("Grep", {"pattern": "foo"}, context)
-        assert isinstance(result, PermissionResultAllow)
-
     async def test_allows_bash_read_only_command(self, callback, context):
         """Read-only bash commands pass through even with external paths."""
         result = await callback("Bash", {"command": "cat /etc/hosts"}, context)
         assert isinstance(result, PermissionResultAllow)
 
-    async def test_file_tool_without_path_allowed(self, callback, context):
-        """File tool call without a path key is allowed (no path to validate)."""
-        result = await callback("Read", {"content": "something"}, context)
-        assert isinstance(result, PermissionResultAllow)
+    async def test_allows_non_bash_tools(self, callback, context):
+        """Non-bash tools (file tools, search tools, etc.) get PermissionResultAllow."""
+        for tool_name, tool_input in [
+            ("Read", {"file_path": "/etc/passwd"}),
+            ("Write", {"file_path": "../../etc/passwd"}),
+            ("Grep", {"pattern": "foo"}),
+            ("Glob", {"pattern": "*.py"}),
+            ("NotebookEdit", {"path": "notebook.ipynb"}),
+        ]:
+            result = await callback(tool_name, tool_input, context)
+            assert isinstance(
+                result, PermissionResultAllow
+            ), f"Expected Allow for {tool_name}"
 
-    async def test_wired_into_sdk_manager(self, tmp_path):
-        """SecurityValidator is wired into options.can_use_tool by execute_command."""
-        validator = MagicMock()
-        validator.validate_path = MagicMock(return_value=(True, tmp_path, None))
-
-        config = Settings(
-            telegram_bot_token="test:token",
-            telegram_bot_username="testbot",
-            approved_directory=tmp_path,
-            claude_timeout_seconds=2,
-        )
-        manager = ClaudeSDKManager(config, security_validator=validator)
-
-        captured_options = []
-        mock_factory = _mock_client_factory(
-            _make_assistant_message("ok"),
-            _make_result_message(total_cost_usd=0.01),
-            capture_options=captured_options,
-        )
-
-        with patch(
-            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
-        ):
-            await manager.execute_command(prompt="Test", working_directory=tmp_path)
-
-        assert len(captured_options) == 1
-        assert captured_options[0].can_use_tool is not None
-
-    async def test_no_callback_without_security_validator(self, tmp_path):
-        """Verify can_use_tool is None when no SecurityValidator is provided."""
+    async def test_callback_always_wired(self, tmp_path):
+        """can_use_tool callback is always set on options (no SecurityValidator needed)."""
         config = Settings(
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
@@ -724,7 +641,93 @@ class TestCanUseToolCallback:
             await manager.execute_command(prompt="Test", working_directory=tmp_path)
 
         assert len(captured_options) == 1
-        assert captured_options[0].can_use_tool is None
+        assert captured_options[0].can_use_tool is not None
+
+
+class TestPermissionDeniedStream:
+    """Test ToolResultBlock(is_error=True) extraction from SDK stream."""
+
+    @pytest.fixture
+    def config(self, tmp_path):
+        return Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            claude_timeout_seconds=2,
+        )
+
+    @pytest.fixture
+    def sdk_manager(self, config):
+        return ClaudeSDKManager(config)
+
+    async def test_permission_denied_stream_update(self, sdk_manager):
+        """Verify StreamUpdate(type='permission_denied') is emitted for error ToolResultBlock."""
+        error_block = ToolResultBlock(
+            tool_use_id="tool-123",
+            content="Access denied: /etc/passwd is outside allowed paths",
+            is_error=True,
+        )
+        user_msg = UserMessage(content=[error_block])
+
+        mock_factory = _mock_client_factory(
+            _make_assistant_message("Let me read that file"),
+            user_msg,
+            _make_assistant_message("I was denied access"),
+            _make_result_message(result="Could not read file"),
+        )
+
+        stream_updates: list[StreamUpdate] = []
+
+        async def stream_cb(update: StreamUpdate) -> None:
+            stream_updates.append(update)
+
+        with patch(
+            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
+        ):
+            await sdk_manager.execute_command(
+                prompt="Read /etc/passwd",
+                working_directory=Path("/test"),
+                stream_callback=stream_cb,
+            )
+
+        denied = [u for u in stream_updates if u.type == "permission_denied"]
+        assert len(denied) == 1
+        assert "Access denied" in denied[0].content
+        assert denied[0].metadata["tool_use_id"] == "tool-123"
+
+    async def test_permission_denied_content_extracted(self, sdk_manager):
+        """Verify error text is captured verbatim from ToolResultBlock."""
+        error_text = "User denied access to Read on /etc/shadow"
+        error_block = ToolResultBlock(
+            tool_use_id="tool-456",
+            content=error_text,
+            is_error=True,
+        )
+        user_msg = UserMessage(content=[error_block])
+
+        mock_factory = _mock_client_factory(
+            user_msg,
+            _make_assistant_message("Understood"),
+            _make_result_message(result="Denied"),
+        )
+
+        stream_updates: list[StreamUpdate] = []
+
+        async def stream_cb(update: StreamUpdate) -> None:
+            stream_updates.append(update)
+
+        with patch(
+            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
+        ):
+            await sdk_manager.execute_command(
+                prompt="Test",
+                working_directory=Path("/test"),
+                stream_callback=stream_cb,
+            )
+
+        denied = [u for u in stream_updates if u.type == "permission_denied"]
+        assert len(denied) == 1
+        assert denied[0].content == error_text
 
 
 class TestSessionIdFallback:

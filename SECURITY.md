@@ -15,16 +15,18 @@ The Claude Code Telegram Bot implements a defense-in-depth security model with m
 - **Token-Based Auth**: Optional token-based authentication for additional security
 - **Session Management**: Secure session handling with timeout and cleanup
 
-### 2. Directory Boundaries
-- **Approved Directory**: All operations confined to a pre-configured directory tree
-- **Path Validation**: Prevents directory traversal attacks (../../../etc/passwd)
-- **Permission Checks**: Validates file system permissions before operations
+### 2. CLI Permission Enforcement
+- **`dontAsk` Mode**: Each agent workspace has a `.claude/settings.json` with strict allowlist — tools not listed are auto-denied
+- **File Tool Restriction**: `Read(./**)` and `Edit(./**)` limit file operations to the agent's working directory
+- **Deny Rules**: Sensitive bash commands (`sudo`, `systemctl`, `kill`, etc.) and self-modification of settings are explicitly denied
+- **PreToolUse Hook**: `bash-boundary.sh` hook checks every path token in bash commands against the working directory boundary, closing the `Bash(*)` bypass
+- **Permission Violations**: Denied tool calls surface as `ToolResultBlock(is_error=True)` in the SDK stream and are displayed to the Telegram user
 
 ### 3. Input Validation
 - **Command Sanitization**: All user inputs sanitized to prevent injection attacks
 - **File Type Validation**: Only allowed file types can be uploaded
 - **Path Sanitization**: Removes dangerous characters and patterns (`;`, `&&`, `$()`, `..`)
-- **Secret File Protection**: Blocks access to `.env`, `.ssh`, `id_rsa`, `.pem` files
+- **SecurityValidator**: Validates paths and inputs at the Telegram middleware layer before requests reach Claude
 
 ### 4. Rate Limiting
 - **Request Rate Limiting**: Token bucket algorithm prevents abuse with configurable limits
@@ -50,7 +52,9 @@ All planned security features are implemented and active:
 - Multi-provider authentication system (whitelist + token)
 - Rate limiting with token bucket algorithm (request and cost-based)
 - Input validation with path traversal, command injection, and zip bomb protection
-- Directory isolation with approved directory boundaries
+- CLI-native permission enforcement (`dontAsk` mode with per-agent `settings.json`)
+- PreToolUse bash-boundary hook for bash command path enforcement
+- Permission violation surfacing in Telegram (denied tool calls shown to user)
 - Security audit logging with risk assessment and event tracking
 - Bot middleware framework (auth, rate limit, security, burst protection)
 - Webhook signature verification (GitHub HMAC-SHA256, generic Bearer token)
@@ -152,8 +156,9 @@ ENVIRONMENT=production  # Enables strict security defaults
 
 1. **Never Commit Secrets** -- use `.gitignore` for `.env`, `*.key`, `*.pem`
 2. **Use Type Safety** -- all functions must have type hints (`mypy --strict`)
-3. **Validate All Inputs** -- use `SecurityValidator` for user-provided paths and commands
-4. **Log Security Events** -- use structlog with `violation_type` and `user_id` context
+3. **Validate Telegram Inputs** -- use `SecurityValidator` for user-provided paths and commands at the middleware layer
+4. **CLI Permissions** -- file/tool access is enforced by per-agent `.claude/settings.json` (not by the SDK wrapper)
+5. **Log Security Events** -- use structlog with `violation_type` and `user_id` context
 
 ## Threat Model
 

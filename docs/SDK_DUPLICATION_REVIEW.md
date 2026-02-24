@@ -324,18 +324,19 @@ This effectively prevents Claude from doing useful shell work in many scenarios.
 
 ### What the SDK provides
 
-1. **Sandbox** — OS-level isolation for filesystem and network
-2. **`can_use_tool`** — semantic, pre-execution validation
-3. **`PreToolUse` hooks** — pattern-matched interception with deny capability
+1. **`can_use_tool`** — semantic, pre-execution validation
+2. **`PreToolUse` hooks** — pattern-matched interception with deny capability
+3. **Permission rules** — `dontAsk` mode with deny/allow lists in `settings.json`
 
-### Recommendation
+### Resolution
 
-- Remove the substring blocklist
-- Use `can_use_tool` for semantic validation (what is the command actually doing?)
-- Rely on the sandbox for OS-level enforcement
-- Keep `check_bash_directory_boundary()` as a utility for the `can_use_tool`
-  callback — its approach (parsing with `shlex`, checking resolved paths) is
-  more sound than substring matching
+- Substring blocklist removed (Phase 3)
+- Bash boundary enforcement now uses a `PreToolUse` hook (`bash-boundary.sh`)
+  that checks all path tokens against the working directory boundary
+- `can_use_tool` callback kept as defense-in-depth (bash-only, no file validation)
+- No sandbox config — the Raspberry Pi 4 has no functional sandbox runtime
+- `check_bash_directory_boundary()` retained in `monitor.py` as a utility for
+  the `can_use_tool` callback
 
 ---
 
@@ -486,11 +487,14 @@ step should be a separate PR that can be tested independently.
 ### Phase 3: Replace `ToolMonitor` with `can_use_tool`
 
 5. ~~**Implement `can_use_tool` callback**~~
-   ✅ **DONE** (Phase 3 branch) — `_make_can_use_tool_callback()` in
-   `sdk_integration.py` encapsulates path validation and directory boundary
-   checks. Wired into `ClaudeAgentOptions` via `SecurityValidator` injection
-   into `ClaudeSDKManager`. Uses `connect(None)` + `query(prompt)` pattern
-   to satisfy SDK's `AsyncIterable` requirement for `can_use_tool`.
+   ✅ **DONE** (Phase 3 branch, refined in permission refactoring) —
+   `_make_can_use_tool_callback()` in `sdk_integration.py` simplified to
+   bash-only boundary checking. File tool validation removed — the CLI handles
+   it natively via per-agent `.claude/settings.json` (`dontAsk` mode with
+   `Read(./**)` / `Edit(./**)` allow rules). `SecurityValidator` decoupled
+   from SDK layer (still used by Telegram middleware). Sandbox config removed
+   (no runtime on this system). `ToolResultBlock(is_error=True)` extraction
+   added to surface CLI permission denials to Telegram users.
 
 6. ~~**Remove `ToolMonitor` and facade interception**~~
    ✅ **DONE** (Phase 3 branch) — Deleted `ToolMonitor` class from `monitor.py`

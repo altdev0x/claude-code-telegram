@@ -41,16 +41,19 @@ A Telegram bot that provides remote access to Claude Code, allowing developers t
 - **Notifications**: Rate-limited Telegram delivery for agent responses
 
 ### Claude Code Integration
-- Full Claude Code SDK integration (CLI fallback)
-- Session management per user/project
-- Tool usage visibility
+- Full Claude Code SDK integration via `ClaudeSDKClient`
+- Session management per user/project with auto-resume
+- Tool usage visibility with verbose output levels
 - Cost tracking and limits
+- Permission violation surfacing in Telegram
 
 ### Security & Access Control
-- Approved directory boundaries
+- CLI-native permission enforcement (`dontAsk` mode with per-agent `settings.json`)
+- PreToolUse bash-boundary hook for shell command path enforcement
 - User authentication (whitelist and token-based)
 - Rate limiting per user
 - Webhook authentication (HMAC-SHA256, Bearer token)
+- Telegram input validation via SecurityValidator
 - Audit logging
 
 ## Technical Architecture
@@ -112,12 +115,13 @@ Webhook/Cron -> EventBus -> AgentHandler -> ClaudeIntegration
 
 ### Security Model
 
-- **Directory Isolation**: All operations confined to approved directory tree
+- **CLI Permission Enforcement**: `dontAsk` mode with per-agent `settings.json` — strict tool allowlist, deny rules for sensitive commands, PreToolUse bash-boundary hook
+- **Directory Isolation**: File tools restricted to agent working directory via CLI rules; bash commands path-checked by hook
 - **User Authentication**: Whitelist or token-based access
 - **Rate Limiting**: Prevent abuse and control costs
 - **Webhook Verification**: HMAC-SHA256 and Bearer token authentication
 - **Audit Trail**: Log all operations for security review
-- **Input Validation**: Sanitize all user inputs
+- **Telegram Input Validation**: SecurityValidator sanitizes user inputs at middleware layer
 
 ## Development Principles
 
