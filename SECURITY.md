@@ -17,9 +17,10 @@ The Claude Code Telegram Bot implements a defense-in-depth security model with m
 
 ### 2. CLI Permission Enforcement
 - **`dontAsk` Mode**: Each agent workspace has a `.claude/settings.json` with strict allowlist — tools not listed are auto-denied
-- **File Tool Restriction**: `Read(./**)` and `Edit(./**)` limit file operations to the agent's working directory
+- **PreToolUse Hooks**: Two hooks enforce path boundaries before any other permission rules:
+  - `file-boundary.sh` — restricts file tools to the working directory (read+write), `~/.claude/plans/**` (read+write), and `~/.claude/skills/**` (read-only)
+  - `bash-boundary.sh` — checks all path tokens in bash commands against the working directory boundary
 - **Deny Rules**: Sensitive bash commands (`sudo`, `systemctl`, `kill`, etc.) and self-modification of settings are explicitly denied
-- **PreToolUse Hook**: `bash-boundary.sh` hook checks every path token in bash commands against the working directory boundary, closing the `Bash(*)` bypass
 - **Permission Violations**: Denied tool calls surface as `ToolResultBlock(is_error=True)` in the SDK stream and are displayed to the Telegram user
 
 ### 3. Input Validation

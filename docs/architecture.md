@@ -64,7 +64,7 @@ context.bot_data["security_validator"]
 
 5-layer defense: authentication (whitelist/token) → CLI permission enforcement (`dontAsk` mode + deny rules + PreToolUse hook) → Telegram input validation (`SecurityValidator`) → rate limiting (token bucket) → audit logging.
 
-- **CLI permissions**: Each agent workspace has a `.claude/settings.json` with `dontAsk` mode. File tools are restricted to the working directory (`Read(./**)`, `Edit(./**)`). Sensitive bash commands are denied. A `PreToolUse` bash-boundary hook checks all path tokens in bash commands against the working directory.
+- **CLI permissions**: Each agent workspace has a `.claude/settings.json` with `dontAsk` mode. Two `PreToolUse` hooks enforce path boundaries: `file-boundary.sh` restricts file tools to CWD, `~/.claude/plans/**` (r+w), and `~/.claude/skills/**` (read-only); `bash-boundary.sh` checks path tokens in shell commands. Sensitive bash commands and settings self-modification are denied via deny rules.
 - **SDK `can_use_tool` callback**: Simplified to bash-only boundary checking as defense-in-depth (only fires in non-`dontAsk` modes).
 - **`SecurityValidator`**: Validates Telegram user inputs at the middleware layer (path traversal, command injection, secret file access). Relaxed with `DISABLE_SECURITY_PATTERNS=true`.
 - **Permission violations**: Denied tool calls return `ToolResultBlock(is_error=True)` in the SDK stream, extracted as `StreamUpdate(type="permission_denied")` and shown in Telegram.

@@ -109,11 +109,13 @@ DISABLE_TOOL_VALIDATION=true
 
 Tool access is enforced by the Claude Code CLI's native permission system, configured per agent workspace:
 
-1. **CLI permission rules** — Each agent workspace has a `.claude/settings.json` with `dontAsk` mode. Only tools listed in the `allow` list can be used. File tools (`Read`, `Write`, `Edit`, `MultiEdit`) are restricted to the working directory via path patterns (e.g., `Read(./**)`, `Edit(./**)`).
+1. **CLI permission rules** — Each agent workspace has a `.claude/settings.json` with `dontAsk` mode. Only tools listed in the `allow` list can be used. Allow rules are type-only (`Read`, `Edit`) — path enforcement is handled by hooks.
 
-2. **Deny rules** — Sensitive bash commands (`sudo`, `systemctl`, `kill`, etc.) and self-modification of `.claude/settings.json` are explicitly denied. Deny rules take precedence over allow rules.
+2. **File boundary hook** — A `PreToolUse` hook (`file-boundary.sh`) fires on every file tool call (Read, Write, Edit, MultiEdit, Glob, Grep, NotebookRead, NotebookEdit) and checks the file path against allowed directories: working directory (read+write), `~/.claude/plans/**` (read+write), `~/.claude/skills/**` (read-only). Everything else is denied.
 
 3. **Bash boundary hook** — A `PreToolUse` hook (`bash-boundary.sh`) fires on every `Bash` tool call and checks all path-like tokens against the working directory boundary. This closes the bypass where `Bash(*)` in the allow list would otherwise permit reading/writing files outside the work dir via shell commands.
+
+4. **Deny rules** — Sensitive bash commands (`sudo`, `systemctl`, `kill`, etc.) and self-modification of `.claude/settings.json` are explicitly denied. Deny rules are evaluated after hooks and take precedence over allow rules.
 
 4. **SDK `can_use_tool` callback** — Defense-in-depth bash boundary checking via `check_bash_directory_boundary()`. Only fires in non-`dontAsk` modes.
 
