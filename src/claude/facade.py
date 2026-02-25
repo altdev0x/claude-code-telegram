@@ -255,6 +255,14 @@ class ClaudeIntegration:
             else:
                 raise
 
+        logger.info(
+            "Ephemeral command completed",
+            cost=response.cost,
+            duration_ms=response.duration_ms,
+            num_turns=response.num_turns,
+            is_error=response.is_error,
+        )
+
         return response
 
     async def _execute(
