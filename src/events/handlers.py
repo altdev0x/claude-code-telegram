@@ -123,31 +123,41 @@ class AgentHandler:
             success = True
             cost = response.cost
             if response.content:
-                response_summary = response.content[:500]
+                silent = self._is_silent(response.content)
 
-                header = self._format_scheduled_header(
-                    event, response.cost, working_dir
-                )
-                formatted_text = f"{header}\n{response.content}"
-
-                for chat_id in event.target_chat_ids:
-                    await self.event_bus.publish(
-                        AgentResponseEvent(
-                            chat_id=chat_id,
-                            text=formatted_text,
-                            originating_event_id=event.id,
-                        )
+                if silent:
+                    response_summary = "[SILENT]"
+                    logger.info(
+                        "Scheduled job signalled [SILENT], suppressing delivery",
+                        job_id=event.job_id,
+                        job_name=event.job_name,
                     )
+                else:
+                    response_summary = response.content[:500]
 
-                # Also broadcast to default chats if no targets specified
-                if not event.target_chat_ids:
-                    await self.event_bus.publish(
-                        AgentResponseEvent(
-                            chat_id=0,
-                            text=formatted_text,
-                            originating_event_id=event.id,
-                        )
+                    header = self._format_scheduled_header(
+                        event, response.cost, working_dir
                     )
+                    formatted_text = f"{header}\n{response.content}"
+
+                    for chat_id in event.target_chat_ids:
+                        await self.event_bus.publish(
+                            AgentResponseEvent(
+                                chat_id=chat_id,
+                                text=formatted_text,
+                                originating_event_id=event.id,
+                            )
+                        )
+
+                    # Also broadcast to default chats if no targets specified
+                    if not event.target_chat_ids:
+                        await self.event_bus.publish(
+                            AgentResponseEvent(
+                                chat_id=0,
+                                text=formatted_text,
+                                originating_event_id=event.id,
+                            )
+                        )
         except Exception as exc:
             error_message = str(exc)[:500]
             logger.exception(
@@ -189,6 +199,19 @@ class AgentHandler:
             f"<i>{escape_html(short_dir)} \u00b7 {event.session_mode}"
             f" \u00b7 ${cost:.2f}</i>"
         )
+
+    @staticmethod
+    def _is_silent(content: str) -> bool:
+        """Check whether the agent response signals [SILENT].
+
+        Matches when the last non-empty line — after stripping whitespace
+        and optional backtick wrapping — equals [SILENT] (case-insensitive).
+        """
+        for line in reversed(content.splitlines()):
+            stripped = line.strip().strip("`").strip()
+            if stripped:
+                return stripped.upper() == "[SILENT]"
+        return False
 
     def _build_webhook_prompt(self, event: WebhookEvent) -> str:
         """Build a Claude prompt from a webhook event."""

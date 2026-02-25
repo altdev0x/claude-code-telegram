@@ -359,3 +359,98 @@ class TestAgentHandler:
         text = response_events[0].text
         assert "<b>health check</b>" in text
         assert "klaus" in text
+
+    class TestSilentSuppression:
+        """Tests for [SILENT] flag detection and delivery suppression."""
+
+        @pytest.mark.parametrize(
+            "content",
+            [
+                "[SILENT]",
+                "[silent]",
+                "[Silent]",
+                "  [SILENT]  ",
+                "`[SILENT]`",
+                "` [SILENT] `",
+                "Some output\n[SILENT]",
+                "Some output\n\n`[SILENT]`\n",
+                "Summary here\n\n[SILENT]\n\n",
+            ],
+            ids=[
+                "exact",
+                "lowercase",
+                "mixed-case",
+                "padded",
+                "backtick-wrapped",
+                "backtick-padded",
+                "after-content",
+                "after-content-backtick-trailing-newline",
+                "trailing-blank-lines",
+            ],
+        )
+        def test_is_silent_positive(self, content: str) -> None:
+            assert AgentHandler._is_silent(content) is True
+
+        @pytest.mark.parametrize(
+            "content",
+            [
+                "Normal response",
+                "Contains [SILENT] in middle\nMore text",
+                "SILENT",
+                "[LOUD]",
+                "",
+            ],
+            ids=[
+                "normal",
+                "mid-text",
+                "no-brackets",
+                "wrong-keyword",
+                "empty",
+            ],
+        )
+        def test_is_silent_negative(self, content: str) -> None:
+            assert AgentHandler._is_silent(content) is False
+
+        async def test_silent_suppresses_delivery(
+            self,
+            event_bus: EventBus,
+            mock_claude: AsyncMock,
+            mock_scheduler: AsyncMock,
+            agent_handler: AgentHandler,
+        ) -> None:
+            """[SILENT] response suppresses Telegram delivery but records the run."""
+            mock_response = MagicMock()
+            mock_response.content = "Nothing actionable.\n\n`[SILENT]`"
+            mock_response.cost = 0.46
+            mock_claude.run_command.return_value = mock_response
+
+            published: list = []
+            original_publish = event_bus.publish
+
+            async def capture_publish(event):  # type: ignore[no-untyped-def]
+                published.append(event)
+                await original_publish(event)
+
+            event_bus.publish = capture_publish  # type: ignore[assignment]
+
+            event = ScheduledEvent(
+                job_id="job-hb",
+                job_name="Heartbeat 8:00CET",
+                prompt="Run heartbeat",
+                target_chat_ids=[100],
+            )
+
+            await agent_handler.handle_scheduled(event)
+
+            # No AgentResponseEvent should be published
+            response_events = [
+                e for e in published if isinstance(e, AgentResponseEvent)
+            ]
+            assert len(response_events) == 0
+
+            # Job run should still be recorded
+            mock_scheduler.record_job_run.assert_called_once()
+            call_kwargs = mock_scheduler.record_job_run.call_args.kwargs
+            assert call_kwargs["success"] is True
+            assert call_kwargs["response_summary"] == "[SILENT]"
+            assert call_kwargs["cost"] == 0.46
