@@ -252,14 +252,14 @@ The deny list covers:
 Both agents share the same `settings.json` structure and hooks. Allow rules are
 type-only (`Read`, `Edit`); path enforcement is handled entirely by hooks.
 
-### Herbert (`/home/clawdbot/claude-telegram-workspace/herbert/`)
+### Herbert (`/home/clawdbot/agents/herbert/`)
 
 - `Read`, `Edit` (no path patterns — hooks enforce boundaries)
 - file-boundary hook: CWD (r+w), `~/.claude/plans/**` (r+w), `~/.claude/skills/**` (read-only)
 - bash-boundary hook: CWD + `~/.claude/`
 - Full deny list + self-modification denied
 
-### Klaus (`/home/clawdbot/claude-telegram-workspace/klaus/`)
+### Klaus (`/home/clawdbot/agents/klaus/`)
 
 - Same configuration as Herbert
 - Same hooks and deny rules

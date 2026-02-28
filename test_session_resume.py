@@ -8,7 +8,7 @@ from claude_agent_sdk._internal.message_parser import parse_message
 
 os.environ.pop("CLAUDECODE", None)
 
-CWD = "/home/clawdbot/claude-telegram-workspace/klaus"
+CWD = "/home/clawdbot/agents/klaus"
 
 
 async def run_session(resume_id=None, continue_conv=False, prompt="say hi"):
