@@ -18,7 +18,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from src.utils.constants import (
     DEFAULT_CLAUDE_MAX_COST_PER_USER,
     DEFAULT_CLAUDE_MAX_TURNS,
-    DEFAULT_CLAUDE_TIMEOUT_SECONDS,
+    DEFAULT_CLAUDE_IDLE_TIMEOUT_SECONDS,
     DEFAULT_DATABASE_URL,
     DEFAULT_MAX_SESSIONS_PER_USER,
     DEFAULT_PROJECT_THREADS_SYNC_ACTION_INTERVAL_SECONDS,
@@ -75,8 +75,9 @@ class Settings(BaseSettings):
     claude_max_turns: int = Field(
         DEFAULT_CLAUDE_MAX_TURNS, description="Max conversation turns"
     )
-    claude_timeout_seconds: int = Field(
-        DEFAULT_CLAUDE_TIMEOUT_SECONDS, description="Claude timeout"
+    claude_idle_timeout_seconds: int = Field(
+        DEFAULT_CLAUDE_IDLE_TIMEOUT_SECONDS,
+        description="Default idle timeout -- max seconds of silence before cancellation",
     )
     claude_max_cost_per_user: float = Field(
         DEFAULT_CLAUDE_MAX_COST_PER_USER, description="Max cost per user"

@@ -97,7 +97,7 @@ class TestClaudeSDKManager:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,  # Short timeout for testing
+            claude_idle_timeout_seconds=2,  # Short timeout for testing
         )
 
     @pytest.fixture
@@ -115,7 +115,7 @@ class TestClaudeSDKManager:
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
             anthropic_api_key="test-api-key",
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
         )
 
         # Store original env var
@@ -276,7 +276,7 @@ class TestClaudeSDKManager:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
             enable_mcp=True,
             mcp_config_path=str(mcp_config_file),
         )
@@ -381,7 +381,7 @@ class TestClaudeAgentOptionsWiring:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
         )
         manager = ClaudeSDKManager(config)
 
@@ -414,7 +414,7 @@ class TestClaudeAgentOptionsWiring:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
             claude_disallowed_tools=["WebFetch", "WebSearch"],
         )
         manager = ClaudeSDKManager(config)
@@ -443,7 +443,7 @@ class TestClaudeAgentOptionsWiring:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
             claude_allowed_tools=["Read", "Write", "Bash"],
         )
         manager = ClaudeSDKManager(config)
@@ -472,7 +472,7 @@ class TestClaudeAgentOptionsWiring:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
         )
         manager = ClaudeSDKManager(config)
 
@@ -507,7 +507,7 @@ class TestClaudeMCPErrors:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
         )
 
     @pytest.fixture
@@ -569,7 +569,7 @@ class TestPermissionDeniedStream:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
         )
 
     @pytest.fixture
@@ -655,7 +655,7 @@ class TestSessionIdFallback:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
         )
 
     @pytest.fixture
@@ -790,7 +790,7 @@ class TestBuildSystemPrompt:
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
-            claude_timeout_seconds=2,
+            claude_idle_timeout_seconds=2,
         )
         return ClaudeSDKManager(config)
 

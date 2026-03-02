@@ -343,6 +343,14 @@ class DatabaseManager:
                 ALTER TABLE scheduled_jobs ADD COLUMN run_date TEXT;
                 """,
             ),
+            (
+                7,
+                """
+                -- Per-job watchdog and turn limits (NULL = use global default)
+                ALTER TABLE scheduled_jobs ADD COLUMN max_turns INTEGER DEFAULT NULL;
+                ALTER TABLE scheduled_jobs ADD COLUMN idle_timeout_seconds INTEGER DEFAULT NULL;
+                """,
+            ),
         ]
 
     async def _init_pool(self):

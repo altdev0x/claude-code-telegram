@@ -35,6 +35,8 @@ from claude_agent_sdk.types import SystemPromptPreset
 
 from ..config.settings import Settings
 from .exceptions import (
+    ClaudeExecutionError,
+    ClaudeIdleTimeoutError,
     ClaudeMCPError,
     ClaudeParsingError,
     ClaudeProcessError,
@@ -180,21 +182,50 @@ class ClaudeSDKManager:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable[[StreamUpdate], None]] = None,
+        idle_timeout: Optional[int] = None,
+        max_turns: Optional[int] = None,
     ) -> ClaudeResponse:
-        """Execute Claude Code command via SDK."""
+        """Execute Claude Code command via SDK.
+
+        Uses an idle-based watchdog instead of a hard wall-clock timeout.
+        The watchdog resets on every message received; it only fires when
+        no message arrives for ``idle_timeout`` seconds (default: config
+        ``claude_idle_timeout_seconds``).  A job that actively runs for
+        hours is fine; a job hung for 3 minutes is detected quickly.
+
+        Args:
+            idle_timeout: Seconds of silence before watchdog cancels.
+                None → use ``self.config.claude_idle_timeout_seconds``.
+            max_turns: Override max conversation turns.  None → use
+                ``self.config.claude_max_turns``.  0 → unlimited.
+        """
         start_time = asyncio.get_event_loop().time()
+        effective_idle_timeout = (
+            idle_timeout
+            if idle_timeout is not None
+            else self.config.claude_idle_timeout_seconds
+        )
+        # 0 means unlimited turns; None is what the SDK expects for unlimited
+        effective_max_turns: Optional[int] = (
+            max_turns if max_turns is not None else self.config.claude_max_turns
+        )
+        if effective_max_turns == 0:
+            effective_max_turns = None
 
         logger.info(
             "Starting Claude SDK command",
             working_directory=str(working_directory),
             session_id=session_id,
             continue_session=continue_session,
+            idle_timeout=effective_idle_timeout,
+            max_turns=effective_max_turns,
         )
 
-        try:
-            # Capture stderr from Claude CLI for better error diagnostics
-            stderr_lines: List[str] = []
+        # Collect messages in outer scope so exception handlers can salvage partials
+        messages: List[Message] = []
+        stderr_lines: List[str] = []
 
+        try:
             def _stderr_callback(line: str) -> None:
                 stderr_lines.append(line)
                 logger.debug("Claude CLI stderr", line=line)
@@ -202,7 +233,7 @@ class ClaudeSDKManager:
             # Build Claude Agent options
             cli_path = find_claude_cli(self.config.claude_cli_path)
             options = ClaudeAgentOptions(
-                max_turns=self.config.claude_max_turns,
+                max_turns=effective_max_turns,
                 cwd=str(working_directory),
                 allowed_tools=self.config.claude_allowed_tools,
                 disallowed_tools=self.config.claude_disallowed_tools,
@@ -236,8 +267,10 @@ class ClaudeSDKManager:
                     session_id=session_id,
                 )
 
-            # Collect messages via ClaudeSDKClient
-            messages: List[Message] = []
+            # Event that the watchdog uses to detect SDK activity.
+            # _run_client sets it on every received message; the watchdog
+            # clears it before each wait so it only triggers on new messages.
+            message_event = asyncio.Event()
 
             async def _run_client() -> None:
                 # Use connect(None) + query(prompt) pattern because
@@ -262,6 +295,9 @@ class ClaudeSDKManager:
                     # causing us to lose all subsequent messages including
                     # the ResultMessage.
                     async for raw_data in client._query.receive_messages():
+                        # Signal the watchdog: a message arrived
+                        message_event.set()
+
                         try:
                             message = parse_message(raw_data)
                         except MessageParseError as e:
@@ -291,11 +327,59 @@ class ClaudeSDKManager:
                 finally:
                     await client.disconnect()
 
-            # Execute with timeout
-            await asyncio.wait_for(
-                _run_client(),
-                timeout=self.config.claude_timeout_seconds,
+            async def _watchdog() -> None:
+                """Cancel execution when no messages arrive within idle_timeout."""
+                while True:
+                    message_event.clear()
+                    try:
+                        await asyncio.wait_for(
+                            message_event.wait(),
+                            timeout=effective_idle_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        raise ClaudeIdleTimeoutError(
+                            f"No messages received from Claude SDK "
+                            f"for {effective_idle_timeout}s"
+                        )
+
+            # Run both tasks; stop as soon as one finishes (or fails)
+            client_task: asyncio.Task[None] = asyncio.create_task(_run_client())
+            watchdog_task: asyncio.Task[None] = asyncio.create_task(_watchdog())
+
+            done, pending = await asyncio.wait(
+                [client_task, watchdog_task],
+                return_when=asyncio.FIRST_COMPLETED,
             )
+
+            # Cancel the survivor
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            # Re-raise any exception from completed tasks.
+            # If we already have partial messages, wrap them for the caller.
+            for task in done:
+                exc = task.exception()
+                if exc is not None:
+                    if messages:
+                        logger.warning(
+                            "Claude execution failed with partial results",
+                            messages_received=len(messages),
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        )
+                        raise ClaudeExecutionError(
+                            error=exc,
+                            partial_content=self._extract_content_from_messages(
+                                messages
+                            ),
+                            partial_cost=self._extract_cost_from_messages(messages),
+                            messages_received=len(messages),
+                        )
+                    raise exc
 
             # Extract cost, tools, and session_id from result message
             cost = 0.0
@@ -358,14 +442,17 @@ class ClaudeSDKManager:
                 tools_used=tools_used,
             )
 
-        except asyncio.TimeoutError:
+        except ClaudeExecutionError:
+            # Already wrapped with partial results — don't re-wrap
+            raise
+
+        except ClaudeIdleTimeoutError as e:
+            # Watchdog fired but no partial results to salvage
             logger.error(
-                "Claude SDK command timed out",
-                timeout_seconds=self.config.claude_timeout_seconds,
+                "Claude SDK idle timeout (no partial results)",
+                idle_timeout_seconds=effective_idle_timeout,
             )
-            raise ClaudeTimeoutError(
-                f"Claude SDK timed out after {self.config.claude_timeout_seconds}s"
-            )
+            raise ClaudeTimeoutError(str(e))
 
         except CLINotFoundError as e:
             logger.error("Claude CLI not found", error=str(e))
@@ -512,6 +599,13 @@ class ClaudeSDKManager:
 
         except Exception as e:
             logger.warning("Stream callback failed", error=str(e))
+
+    def _extract_cost_from_messages(self, messages: List[Message]) -> float:
+        """Extract cost from accumulated messages, returning 0.0 if not available."""
+        for message in messages:
+            if isinstance(message, ResultMessage):
+                return getattr(message, "total_cost_usd", 0.0) or 0.0
+        return 0.0
 
     def _extract_content_from_messages(self, messages: List[Message]) -> str:
         """Extract content from message list."""
