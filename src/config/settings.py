@@ -70,7 +70,7 @@ class Settings(BaseSettings):
         description="Anthropic API key for SDK (optional if CLI logged in)",
     )
     claude_model: str = Field(
-        "sonnet", description="Claude model to use (friendly name or full model ID)"
+        "opus", description="Claude model to use (friendly name or full model ID)"
     )
     claude_max_turns: int = Field(
         DEFAULT_CLAUDE_MAX_TURNS, description="Max conversation turns"

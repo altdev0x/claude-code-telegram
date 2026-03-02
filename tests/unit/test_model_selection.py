@@ -71,7 +71,7 @@ class TestConfigDefault:
             telegram_bot_username="test_bot",
             approved_directory=str(tmp_path),
         )
-        assert settings.claude_model == "sonnet"
+        assert settings.claude_model == "opus"
 
     def test_claude_model_can_be_overridden(self, tmp_path: Path) -> None:
         from src.config.settings import Settings
