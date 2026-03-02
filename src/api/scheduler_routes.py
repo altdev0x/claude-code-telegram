@@ -185,8 +185,10 @@ def create_scheduler_router(
         fields = request.model_dump(exclude_unset=True)
         try:
             await job_scheduler.update_job(job_id, **fields)
-        except ValueError as e:
+        except LookupError as e:
             raise HTTPException(status_code=404, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception("Failed to update job", job_id=job_id)
             raise HTTPException(status_code=500, detail=str(e))

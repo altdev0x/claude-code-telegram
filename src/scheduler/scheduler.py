@@ -185,6 +185,15 @@ class JobScheduler:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    @staticmethod
+    def _parse_chat_ids(raw: Any) -> List[int]:
+        """Parse a comma-separated string (or list) of chat IDs to List[int]."""
+        if isinstance(raw, list):
+            return [int(x) for x in raw]
+        if isinstance(raw, str) and raw:
+            return [int(x) for x in raw.split(",") if x.strip()]
+        return []
+
     async def trigger_now(self, job_id: str) -> bool:
         """Manually trigger a job immediately via the event bus.
 
@@ -198,12 +207,7 @@ class JobScheduler:
         if not job:
             raise ValueError(f"Job not found: {job_id}")
 
-        chat_ids_str = job.get("target_chat_ids", "")
-        chat_ids = (
-            [int(x) for x in chat_ids_str.split(",") if x.strip()]
-            if isinstance(chat_ids_str, str) and chat_ids_str
-            else []
-        )
+        chat_ids = self._parse_chat_ids(job.get("target_chat_ids", ""))
 
         event = ScheduledEvent(
             job_id=job_id,
@@ -241,15 +245,15 @@ class JobScheduler:
         working_directory: Optional[str] = None,
         target_chat_ids: Optional[List[int]] = None,
         is_active: Optional[bool] = None,
-        **_: Any,
     ) -> bool:
         """Update fields of an existing scheduled job.
 
         Only the explicitly provided (non-None) fields are changed.
-        The APScheduler job is always refreshed after the DB update.
+        The APScheduler job is refreshed only when something actually changed.
 
         Raises:
-            ValueError: If the job does not exist or session_mode is invalid.
+            LookupError: If the job does not exist.
+            ValueError: If a field value is invalid (e.g. bad session_mode).
         """
         # Fetch current job regardless of is_active status
         async with self.db_manager.get_connection() as conn:
@@ -259,7 +263,7 @@ class JobScheduler:
             )
             row = await cursor.fetchone()
         if not row:
-            raise ValueError(f"Job not found: {job_id}")
+            raise LookupError(f"Job not found: {job_id}")
 
         if session_mode is not None and session_mode not in ("isolated", "resume"):
             raise ValueError(f"Invalid session_mode: {session_mode!r}")
@@ -276,8 +280,6 @@ class JobScheduler:
             updates["trigger_type"] = trigger_type
         if prompt is not None:
             updates["prompt"] = prompt
-        # model uses sentinel check: caller passes it only when explicitly set
-        # (we accept None as a valid value meaning "clear per-job override")
         if model is not None:
             updates["model"] = model
         if session_mode is not None:
@@ -289,15 +291,17 @@ class JobScheduler:
         if is_active is not None:
             updates["is_active"] = is_active
 
-        if updates:
-            updates["updated_at"] = datetime.now(UTC).isoformat()
-            set_clause = ", ".join(f"{k} = ?" for k in updates)
-            async with self.db_manager.get_connection() as conn:
-                await conn.execute(
-                    f"UPDATE scheduled_jobs SET {set_clause} WHERE job_id = ?",
-                    (*updates.values(), job_id),
-                )
-                await conn.commit()
+        if not updates:
+            return True
+
+        updates["updated_at"] = datetime.now(UTC).isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        async with self.db_manager.get_connection() as conn:
+            await conn.execute(
+                f"UPDATE scheduled_jobs SET {set_clause} WHERE job_id = ?",
+                (*updates.values(), job_id),
+            )
+            await conn.commit()
 
         # Refresh APScheduler: remove old registration, re-add if now active
         try:
@@ -316,13 +320,6 @@ class JobScheduler:
             else:
                 ap_trigger = DateTrigger(run_date=run_date_str)
 
-            chat_ids_str = updated_job.get("target_chat_ids", "")
-            chat_ids = (
-                [int(x) for x in chat_ids_str.split(",") if x.strip()]
-                if chat_ids_str
-                else []
-            )
-
             self._scheduler.add_job(
                 self._fire_event,
                 trigger=ap_trigger,
@@ -331,7 +328,9 @@ class JobScheduler:
                     "job_name": updated_job["job_name"],
                     "prompt": updated_job["prompt"],
                     "working_directory": updated_job["working_directory"],
-                    "target_chat_ids": chat_ids,
+                    "target_chat_ids": self._parse_chat_ids(
+                        updated_job.get("target_chat_ids", "")
+                    ),
                     "skill_name": updated_job.get("skill_name"),
                     "session_mode": updated_job.get("session_mode", "isolated"),
                     "created_by": updated_job.get("created_by", 0),
@@ -495,14 +494,6 @@ class JobScheduler:
                     else:
                         trigger = CronTrigger.from_crontab(cron_expr)
 
-                    # Parse target_chat_ids from stored string
-                    chat_ids_str = row_dict.get("target_chat_ids", "")
-                    chat_ids = (
-                        [int(x) for x in chat_ids_str.split(",") if x.strip()]
-                        if chat_ids_str
-                        else []
-                    )
-
                     self._scheduler.add_job(
                         self._fire_event,
                         trigger=trigger,
@@ -511,7 +502,9 @@ class JobScheduler:
                             "job_name": row_dict["job_name"],
                             "prompt": row_dict["prompt"],
                             "working_directory": row_dict["working_directory"],
-                            "target_chat_ids": chat_ids,
+                            "target_chat_ids": self._parse_chat_ids(
+                                row_dict.get("target_chat_ids", "")
+                            ),
                             "skill_name": row_dict.get("skill_name"),
                             "session_mode": row_dict.get("session_mode", "isolated"),
                             "created_by": row_dict.get("created_by", 0),

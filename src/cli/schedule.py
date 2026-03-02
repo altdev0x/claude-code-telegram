@@ -7,6 +7,8 @@ from typing import Optional
 
 import click
 
+from ..utils.constants import MODEL_MAP
+
 
 def _get_api_url() -> str:
     """Build the base API URL from environment."""
@@ -101,7 +103,7 @@ def schedule() -> None:
 )
 @click.option(
     "--model",
-    type=click.Choice(["sonnet", "opus", "haiku"]),
+    type=click.Choice(list(MODEL_MAP.keys())),
     default="sonnet",
     help="Claude model to use (default: sonnet).",
 )
@@ -175,7 +177,7 @@ def add_job(
 )
 @click.option(
     "--model",
-    type=click.Choice(["sonnet", "opus", "haiku"]),
+    type=click.Choice(list(MODEL_MAP.keys())),
     default=None,
     help="New Claude model.",
 )
