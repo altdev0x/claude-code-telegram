@@ -343,6 +343,13 @@ class DatabaseManager:
                 ALTER TABLE scheduled_jobs ADD COLUMN run_date TEXT;
                 """,
             ),
+            (
+                7,
+                """
+                -- Per-job model override (NULL = use global default)
+                ALTER TABLE scheduled_jobs ADD COLUMN model TEXT DEFAULT NULL;
+                """,
+            ),
         ]
 
     async def _init_pool(self):

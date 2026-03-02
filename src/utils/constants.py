@@ -84,5 +84,12 @@ DEFAULT_BACKUP_RETENTION_DAYS = 30
 DEFAULT_CLAUDE_BINARY = "claude"
 DEFAULT_CLAUDE_OUTPUT_FORMAT = "stream-json"
 
+# Supported Claude models (friendly name → model ID)
+MODEL_MAP = {
+    "sonnet": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-6",
+    "haiku": "claude-haiku-4-5-20251001",
+}
+
 # Logging
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

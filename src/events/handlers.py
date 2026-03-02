@@ -118,6 +118,7 @@ class AgentHandler:
                 user_id=self.default_user_id,
                 force_new=force_new,
                 ephemeral=True,
+                model=event.model,
             )
 
             success = True

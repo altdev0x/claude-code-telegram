@@ -44,6 +44,7 @@ class ClaudeIntegration:
         force_new: bool = False,
         ephemeral: bool = False,
         system_prompt_append: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> ClaudeResponse:
         """Run Claude Code command with full integration.
 
@@ -66,6 +67,7 @@ class ClaudeIntegration:
                 force_new=force_new,
                 ephemeral=ephemeral,
                 system_prompt_append=system_prompt_append,
+                model=model,
             )
 
     async def _run_command_locked(
@@ -78,6 +80,7 @@ class ClaudeIntegration:
         force_new: bool = False,
         ephemeral: bool = False,
         system_prompt_append: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> ClaudeResponse:
         """Inner run_command implementation, called while holding the session lock."""
         logger.info(
@@ -101,6 +104,7 @@ class ClaudeIntegration:
                 on_stream=on_stream,
                 force_new=force_new,
                 system_prompt_append=system_prompt_append,
+                model=model,
             )
 
         # If no session_id provided, try to find an existing session for this
@@ -141,6 +145,7 @@ class ClaudeIntegration:
                     continue_session=should_continue,
                     stream_callback=on_stream,
                     system_prompt_append=system_prompt_append,
+                    model=model,
                 )
             except Exception as resume_error:
                 # If resume failed (e.g., session expired/missing on Claude's side),
@@ -166,6 +171,7 @@ class ClaudeIntegration:
                         continue_session=False,
                         stream_callback=on_stream,
                         system_prompt_append=system_prompt_append,
+                        model=model,
                     )
                 else:
                     raise
@@ -210,6 +216,7 @@ class ClaudeIntegration:
         on_stream: Optional[Callable[[StreamUpdate], None]] = None,
         force_new: bool = False,
         system_prompt_append: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> ClaudeResponse:
         """Execute a command without touching the session store.
 
@@ -236,6 +243,7 @@ class ClaudeIntegration:
                 continue_session=should_continue,
                 stream_callback=on_stream,
                 system_prompt_append=system_prompt_append,
+                model=model,
             )
         except Exception:
             if should_continue:
@@ -251,6 +259,7 @@ class ClaudeIntegration:
                     continue_session=False,
                     stream_callback=on_stream,
                     system_prompt_append=system_prompt_append,
+                    model=model,
                 )
             else:
                 raise
@@ -273,6 +282,7 @@ class ClaudeIntegration:
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
         system_prompt_append: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> ClaudeResponse:
         """Execute command via SDK."""
         kwargs: Dict[str, Any] = dict(
@@ -284,6 +294,8 @@ class ClaudeIntegration:
         )
         if system_prompt_append is not None:
             kwargs["system_prompt_append"] = system_prompt_append
+        if model is not None:
+            kwargs["model"] = model
         return await self.sdk_manager.execute_command(**kwargs)
 
     async def _find_resumable_session(

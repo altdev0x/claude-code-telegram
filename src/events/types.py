@@ -42,6 +42,7 @@ class ScheduledEvent(Event):
     session_mode: str = "isolated"
     created_by: int = 0
     cron_expression: str = ""
+    model: Optional[str] = None
     source: str = "scheduler"
 
 

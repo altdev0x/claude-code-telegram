@@ -34,6 +34,7 @@ from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import SystemPromptPreset
 
 from ..config.settings import Settings
+from ..utils.constants import MODEL_MAP
 from .exceptions import (
     ClaudeMCPError,
     ClaudeParsingError,
@@ -180,6 +181,7 @@ class ClaudeSDKManager:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable[[StreamUpdate], None]] = None,
+        model: Optional[str] = None,
     ) -> ClaudeResponse:
         """Execute Claude Code command via SDK."""
         start_time = asyncio.get_event_loop().time()
@@ -199,9 +201,15 @@ class ClaudeSDKManager:
                 stderr_lines.append(line)
                 logger.debug("Claude CLI stderr", line=line)
 
+            # Resolve model: per-job override > global config default.
+            # Map friendly name (sonnet/opus/haiku) to full model ID via MODEL_MAP.
+            raw_model = model if model is not None else self.config.claude_model
+            resolved_model = MODEL_MAP.get(raw_model, raw_model)
+
             # Build Claude Agent options
             cli_path = find_claude_cli(self.config.claude_cli_path)
             options = ClaudeAgentOptions(
+                model=resolved_model,
                 max_turns=self.config.claude_max_turns,
                 cwd=str(working_directory),
                 allowed_tools=self.config.claude_allowed_tools,

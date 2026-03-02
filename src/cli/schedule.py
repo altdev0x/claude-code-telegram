@@ -99,6 +99,12 @@ def schedule() -> None:
     default="isolated",
     help="Session mode: isolated (fresh) or resume (continue user session).",
 )
+@click.option(
+    "--model",
+    type=click.Choice(["sonnet", "opus", "haiku"]),
+    default="sonnet",
+    help="Claude model to use (default: sonnet).",
+)
 def add_job(
     name: str,
     cron: Optional[str],
@@ -108,6 +114,7 @@ def add_job(
     working_dir: Optional[str],
     skill: Optional[str],
     session_mode: str,
+    model: str,
 ) -> None:
     """Add a new scheduled job.
 
@@ -129,6 +136,7 @@ def add_job(
         "target_chat_ids": list(chat_id),
         "session_mode": session_mode,
         "trigger_type": trigger_type,
+        "model": model,
     }
     if run_date:
         payload["run_date"] = run_date
@@ -139,6 +147,81 @@ def add_job(
 
     result = _request("POST", "/api/scheduler/jobs", json_data=payload)
     click.echo(f"Job created: {result['job_id']}")
+
+
+@schedule.command(name="update")
+@click.argument("job_id")
+@click.option("--name", default=None, help="New human-readable job name.")
+@click.option("--cron", default=None, help='New cron expression (e.g. "0 9 * * 1-5").')
+@click.option(
+    "--at",
+    "run_date",
+    default=None,
+    help='New one-time run date in ISO 8601 (e.g. "2026-03-01T09:00:00").',
+)
+@click.option("--prompt", default=None, help="New prompt to send to Claude.")
+@click.option(
+    "--chat-id",
+    multiple=True,
+    type=int,
+    help="Replace target Telegram chat IDs (repeatable).",
+)
+@click.option("--working-dir", default=None, help="New working directory for Claude.")
+@click.option(
+    "--session-mode",
+    type=click.Choice(["isolated", "resume"]),
+    default=None,
+    help="New session mode.",
+)
+@click.option(
+    "--model",
+    type=click.Choice(["sonnet", "opus", "haiku"]),
+    default=None,
+    help="New Claude model.",
+)
+@click.option("--active/--inactive", default=None, help="Enable or disable the job.")
+def update_job(
+    job_id: str,
+    name: Optional[str],
+    cron: Optional[str],
+    run_date: Optional[str],
+    prompt: Optional[str],
+    chat_id: tuple,
+    working_dir: Optional[str],
+    session_mode: Optional[str],
+    model: Optional[str],
+    active: Optional[bool],
+) -> None:
+    """Update an existing scheduled job.
+
+    Only the options explicitly provided are changed.
+    """
+    payload: dict = {}
+    if name is not None:
+        payload["job_name"] = name
+    if cron is not None:
+        payload["cron_expression"] = cron
+    if run_date is not None:
+        payload["run_date"] = run_date
+    if prompt is not None:
+        payload["prompt"] = prompt
+    if chat_id:
+        payload["target_chat_ids"] = list(chat_id)
+    if working_dir is not None:
+        payload["working_directory"] = working_dir
+    if session_mode is not None:
+        payload["session_mode"] = session_mode
+    if model is not None:
+        payload["model"] = model
+    if active is not None:
+        payload["is_active"] = active
+
+    if not payload:
+        click.echo("No fields to update. Provide at least one option.", err=True)
+        sys.exit(1)
+
+    _request("PATCH", f"/api/scheduler/jobs/{job_id}", json_data=payload)
+    click.echo(f"Job {job_id} updated.")
 
 
 @schedule.command(name="list")
