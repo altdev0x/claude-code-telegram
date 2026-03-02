@@ -1,0 +1,15 @@
+projects:
+  - slug: klaus
+    name: Klaus
+    path: klaus
+    enabled: true
+
+  - slug: mia
+    name: Mia
+    path: mia
+    enabled: true
+
+  - slug: herbert
+    name: Herbert
+    path: herbert
+    enabled: false

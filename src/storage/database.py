@@ -348,6 +348,9 @@ class DatabaseManager:
                 """
                 -- Per-job model override (NULL = use global default)
                 ALTER TABLE scheduled_jobs ADD COLUMN model TEXT DEFAULT NULL;
+                -- Per-job watchdog and turn limits (NULL = use global default)
+                ALTER TABLE scheduled_jobs ADD COLUMN max_turns INTEGER DEFAULT NULL;
+                ALTER TABLE scheduled_jobs ADD COLUMN idle_timeout_seconds INTEGER DEFAULT NULL;
                 """,
             ),
         ]

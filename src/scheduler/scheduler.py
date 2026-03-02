@@ -60,6 +60,8 @@ class JobScheduler:
         trigger_type: str = "cron",
         run_date: Optional[str] = None,
         model: Optional[str] = None,
+        max_turns: Optional[int] = None,
+        idle_timeout_seconds: Optional[int] = None,
     ) -> str:
         """Add a new scheduled job.
 
@@ -76,6 +78,10 @@ class JobScheduler:
                           the user's most recent session for the directory).
             trigger_type: "cron" for recurring or "date" for one-time.
             run_date: ISO 8601 datetime for date triggers.
+            max_turns: Override max conversation turns (None = global default,
+                0 = unlimited).
+            idle_timeout_seconds: Override idle watchdog timeout in seconds
+                (None = global default).
 
         Returns:
             The job ID.
@@ -110,6 +116,8 @@ class JobScheduler:
                 "created_by": created_by,
                 "cron_expression": cron_expression,
                 "model": model,
+                "max_turns": max_turns,
+                "idle_timeout_seconds": idle_timeout_seconds,
             },
             name=job_name,
         )
@@ -136,6 +144,8 @@ class JobScheduler:
             trigger_type=trigger_type,
             run_date=run_date,
             model=model,
+            max_turns=max_turns,
+            idle_timeout_seconds=idle_timeout_seconds,
         )
 
         logger.info(
@@ -220,6 +230,8 @@ class JobScheduler:
             created_by=job.get("created_by", 0),
             cron_expression=job.get("cron_expression", ""),
             model=job.get("model"),
+            idle_timeout_seconds=job.get("idle_timeout_seconds"),
+            max_turns=job.get("max_turns"),
         )
 
         logger.info(
@@ -241,6 +253,8 @@ class JobScheduler:
         trigger_type: Optional[str] = None,
         prompt: Optional[str] = None,
         model: Optional[str] = None,
+        max_turns: Optional[int] = None,
+        idle_timeout_seconds: Optional[int] = None,
         session_mode: Optional[str] = None,
         working_directory: Optional[str] = None,
         target_chat_ids: Optional[List[int]] = None,
@@ -282,6 +296,10 @@ class JobScheduler:
             updates["prompt"] = prompt
         if model is not None:
             updates["model"] = model
+        if max_turns is not None:
+            updates["max_turns"] = max_turns
+        if idle_timeout_seconds is not None:
+            updates["idle_timeout_seconds"] = idle_timeout_seconds
         if session_mode is not None:
             updates["session_mode"] = session_mode
         if working_directory is not None:
@@ -336,6 +354,8 @@ class JobScheduler:
                     "created_by": updated_job.get("created_by", 0),
                     "cron_expression": cron_expr,
                     "model": updated_job.get("model"),
+                    "max_turns": updated_job.get("max_turns"),
+                    "idle_timeout_seconds": updated_job.get("idle_timeout_seconds"),
                 },
                 id=job_id,
                 name=updated_job["job_name"],
@@ -422,6 +442,8 @@ class JobScheduler:
         created_by: int = 0,
         cron_expression: str = "",
         model: Optional[str] = None,
+        max_turns: Optional[int] = None,
+        idle_timeout_seconds: Optional[int] = None,
     ) -> None:
         """Called by APScheduler when a job triggers. Publishes a ScheduledEvent."""
         event = ScheduledEvent(
@@ -435,6 +457,8 @@ class JobScheduler:
             created_by=created_by,
             cron_expression=cron_expression,
             model=model,
+            idle_timeout_seconds=idle_timeout_seconds,
+            max_turns=max_turns,
         )
 
         logger.info(
@@ -510,6 +534,10 @@ class JobScheduler:
                             "created_by": row_dict.get("created_by", 0),
                             "cron_expression": cron_expr,
                             "model": row_dict.get("model"),
+                            "max_turns": row_dict.get("max_turns"),
+                            "idle_timeout_seconds": row_dict.get(
+                                "idle_timeout_seconds"
+                            ),
                         },
                         id=row_dict["job_id"],
                         name=row_dict["job_name"],
@@ -547,6 +575,8 @@ class JobScheduler:
         trigger_type: str = "cron",
         run_date: Optional[str] = None,
         model: Optional[str] = None,
+        max_turns: Optional[int] = None,
+        idle_timeout_seconds: Optional[int] = None,
     ) -> None:
         """Persist a job definition to the database."""
         chat_ids_str = ",".join(str(cid) for cid in target_chat_ids)
@@ -556,8 +586,9 @@ class JobScheduler:
                 INSERT OR REPLACE INTO scheduled_jobs
                 (job_id, job_name, cron_expression, prompt, target_chat_ids,
                  working_directory, skill_name, created_by, is_active,
-                 session_mode, trigger_type, run_date, model)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                 session_mode, trigger_type, run_date, model, max_turns,
+                 idle_timeout_seconds)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -572,6 +603,8 @@ class JobScheduler:
                     trigger_type,
                     run_date,
                     model,
+                    max_turns,
+                    idle_timeout_seconds,
                 ),
             )
             await conn.commit()
