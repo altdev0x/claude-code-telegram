@@ -5,6 +5,7 @@ through the Telegram bot API with rate limiting (1 msg/sec per chat).
 """
 
 import asyncio
+import re
 from typing import List, Optional
 
 import structlog
@@ -19,6 +20,34 @@ logger = structlog.get_logger()
 
 # Telegram rate limit: ~30 msgs/sec globally, ~1 msg/sec per chat
 SEND_INTERVAL_SECONDS = 1.1
+
+# Tags Telegram's HTML parser accepts (everything else must be escaped).
+# See: https://core.telegram.org/bots/api#html-style
+_TELEGRAM_SAFE_TAG = re.compile(
+    r"</?(?:b|i|u|s|a|code|pre|tg-spoiler|blockquote)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_html_for_telegram(text: str) -> str:
+    """Escape HTML tags unsupported by Telegram, preserving safe ones.
+
+    Telegram HTML accepts only: b, i, u, s, a, code, pre, tg-spoiler,
+    blockquote.  Any other <tag> is escaped to &lt;tag&gt; so it renders
+    as literal text instead of causing a 400 Bad Request.
+    """
+    result: List[str] = []
+    pos = 0
+    for m in re.finditer(r"<[^>]*>", text):
+        result.append(text[pos : m.start()])
+        tag = m.group(0)
+        if _TELEGRAM_SAFE_TAG.fullmatch(tag):
+            result.append(tag)
+        else:
+            result.append(tag.replace("<", "&lt;").replace(">", "&gt;"))
+        pos = m.end()
+    result.append(text[pos:])
+    return "".join(result)
 
 
 class NotificationService:
@@ -105,9 +134,14 @@ class NotificationService:
             chunks = self._split_message(text)
 
             for chunk in chunks:
+                safe_chunk = (
+                    _sanitize_html_for_telegram(chunk)
+                    if event.parse_mode == "HTML"
+                    else chunk
+                )
                 await self.bot.send_message(
                     chat_id=chat_id,
-                    text=chunk,
+                    text=safe_chunk,
                     parse_mode=(ParseMode.HTML if event.parse_mode == "HTML" else None),
                 )
                 self._last_send_per_chat[chat_id] = asyncio.get_event_loop().time()
