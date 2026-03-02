@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
+from ..bot.utils.html_format import escape_html
 from ..claude.exceptions import ClaudeExecutionError
 from ..claude.facade import ClaudeIntegration
 from .bus import Event, EventBus
@@ -143,24 +144,7 @@ class AgentHandler:
                     )
                     formatted_text = f"{header}\n{response.content}"
 
-                    for chat_id in event.target_chat_ids:
-                        await self.event_bus.publish(
-                            AgentResponseEvent(
-                                chat_id=chat_id,
-                                text=formatted_text,
-                                originating_event_id=event.id,
-                            )
-                        )
-
-                    # Also broadcast to default chats if no targets specified
-                    if not event.target_chat_ids:
-                        await self.event_bus.publish(
-                            AgentResponseEvent(
-                                chat_id=0,
-                                text=formatted_text,
-                                originating_event_id=event.id,
-                            )
-                        )
+                    await self._publish_to_target_chats(event, formatted_text)
 
         except ClaudeExecutionError as exc:
             # Partial results available — format a rich failure notification
@@ -184,7 +168,7 @@ class AgentHandler:
                 messages_received=exc.messages_received,
                 partial_content=truncated,
             )
-            await self._publish_error_notification(event, error_text)
+            await self._publish_to_target_chats(event, error_text)
 
         except Exception as exc:
             error_message = str(exc)[:500]
@@ -204,7 +188,7 @@ class AgentHandler:
                 messages_received=0,
                 partial_content=None,
             )
-            await self._publish_error_notification(event, error_text)
+            await self._publish_to_target_chats(event, error_text)
 
         finally:
             if self.job_scheduler and event.job_id:
@@ -234,8 +218,6 @@ class AgentHandler:
         partial_content: Optional[str],
     ) -> str:
         """Build an HTML error notification for a failed scheduled job."""
-        from ..bot.utils.html_format import escape_html
-
         lines = [
             f"\u26a0\ufe0f Job <b>{escape_html(event.job_name)}</b> failed"
             f" after {elapsed_minutes} minute(s).",
@@ -252,10 +234,10 @@ class AgentHandler:
             ]
         return "\n".join(lines)
 
-    async def _publish_error_notification(
+    async def _publish_to_target_chats(
         self, event: ScheduledEvent, text: str
     ) -> None:
-        """Send error notification to all configured target chats."""
+        """Publish a notification to all target chats, or broadcast if none configured."""
         targets = event.target_chat_ids or []
         if targets:
             for chat_id in targets:
@@ -282,8 +264,6 @@ class AgentHandler:
         working_dir: Path,
     ) -> str:
         """Build an HTML header for scheduled job notifications."""
-        from ..bot.utils.html_format import escape_html
-
         short_dir = Path(working_dir).name
 
         return (
