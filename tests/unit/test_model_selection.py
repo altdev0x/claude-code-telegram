@@ -327,7 +327,7 @@ class TestModelResolution:
         config.claude_allowed_tools = []
         config.claude_disallowed_tools = []
         config.claude_cli_path = None
-        config.claude_timeout_seconds = 60
+        config.claude_idle_timeout_seconds = 60
         config.enable_mcp = False
         config.anthropic_api_key_str = None
         return ClaudeSDKManager(config)
