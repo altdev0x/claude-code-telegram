@@ -59,6 +59,9 @@ class JobScheduler:
         session_mode: str = "isolated",
         trigger_type: str = "cron",
         run_date: Optional[str] = None,
+        model: Optional[str] = None,
+        max_turns: Optional[int] = None,
+        idle_timeout_seconds: Optional[int] = None,
     ) -> str:
         """Add a new scheduled job.
 
@@ -75,6 +78,10 @@ class JobScheduler:
                           the user's most recent session for the directory).
             trigger_type: "cron" for recurring or "date" for one-time.
             run_date: ISO 8601 datetime for date triggers.
+            max_turns: Override max conversation turns (None = global default,
+                0 = unlimited).
+            idle_timeout_seconds: Override idle watchdog timeout in seconds
+                (None = global default).
 
         Returns:
             The job ID.
@@ -108,6 +115,9 @@ class JobScheduler:
                 "session_mode": session_mode,
                 "created_by": created_by,
                 "cron_expression": cron_expression,
+                "model": model,
+                "max_turns": max_turns,
+                "idle_timeout_seconds": idle_timeout_seconds,
             },
             name=job_name,
         )
@@ -133,6 +143,9 @@ class JobScheduler:
             session_mode=session_mode,
             trigger_type=trigger_type,
             run_date=run_date,
+            model=model,
+            max_turns=max_turns,
+            idle_timeout_seconds=idle_timeout_seconds,
         )
 
         logger.info(
@@ -143,6 +156,7 @@ class JobScheduler:
             cron=cron_expression or None,
             run_date=run_date or None,
             session_mode=session_mode,
+            model=model,
         )
         return str(job.id)
 
@@ -181,6 +195,15 @@ class JobScheduler:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    @staticmethod
+    def _parse_chat_ids(raw: Any) -> List[int]:
+        """Parse a comma-separated string (or list) of chat IDs to List[int]."""
+        if isinstance(raw, list):
+            return [int(x) for x in raw]
+        if isinstance(raw, str) and raw:
+            return [int(x) for x in raw.split(",") if x.strip()]
+        return []
+
     async def trigger_now(self, job_id: str) -> bool:
         """Manually trigger a job immediately via the event bus.
 
@@ -194,12 +217,7 @@ class JobScheduler:
         if not job:
             raise ValueError(f"Job not found: {job_id}")
 
-        chat_ids_str = job.get("target_chat_ids", "")
-        chat_ids = (
-            [int(x) for x in chat_ids_str.split(",") if x.strip()]
-            if isinstance(chat_ids_str, str) and chat_ids_str
-            else []
-        )
+        chat_ids = self._parse_chat_ids(job.get("target_chat_ids", ""))
 
         event = ScheduledEvent(
             job_id=job_id,
@@ -211,6 +229,9 @@ class JobScheduler:
             session_mode=job.get("session_mode", "isolated"),
             created_by=job.get("created_by", 0),
             cron_expression=job.get("cron_expression", ""),
+            model=job.get("model"),
+            idle_timeout_seconds=job.get("idle_timeout_seconds"),
+            max_turns=job.get("max_turns"),
         )
 
         logger.info(
@@ -221,6 +242,131 @@ class JobScheduler:
         )
 
         await self.event_bus.publish(event)
+        return True
+
+    async def update_job(
+        self,
+        job_id: str,
+        job_name: Optional[str] = None,
+        cron_expression: Optional[str] = None,
+        run_date: Optional[str] = None,
+        trigger_type: Optional[str] = None,
+        prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        max_turns: Optional[int] = None,
+        idle_timeout_seconds: Optional[int] = None,
+        session_mode: Optional[str] = None,
+        working_directory: Optional[str] = None,
+        target_chat_ids: Optional[List[int]] = None,
+        is_active: Optional[bool] = None,
+    ) -> bool:
+        """Update fields of an existing scheduled job.
+
+        Only the explicitly provided (non-None) fields are changed.
+        The APScheduler job is refreshed only when something actually changed.
+
+        Raises:
+            LookupError: If the job does not exist.
+            ValueError: If a field value is invalid (e.g. bad session_mode).
+        """
+        # Fetch current job regardless of is_active status
+        async with self.db_manager.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM scheduled_jobs WHERE job_id = ?",
+                (job_id,),
+            )
+            row = await cursor.fetchone()
+        if not row:
+            raise LookupError(f"Job not found: {job_id}")
+
+        if session_mode is not None and session_mode not in ("isolated", "resume"):
+            raise ValueError(f"Invalid session_mode: {session_mode!r}")
+
+        # Build DB update dict (only explicitly provided fields)
+        updates: Dict[str, Any] = {}
+        if job_name is not None:
+            updates["job_name"] = job_name
+        if cron_expression is not None:
+            updates["cron_expression"] = cron_expression
+        if run_date is not None:
+            updates["run_date"] = run_date
+        if trigger_type is not None:
+            updates["trigger_type"] = trigger_type
+        if prompt is not None:
+            updates["prompt"] = prompt
+        if model is not None:
+            updates["model"] = model
+        if max_turns is not None:
+            updates["max_turns"] = max_turns
+        if idle_timeout_seconds is not None:
+            updates["idle_timeout_seconds"] = idle_timeout_seconds
+        if session_mode is not None:
+            updates["session_mode"] = session_mode
+        if working_directory is not None:
+            updates["working_directory"] = working_directory
+        if target_chat_ids is not None:
+            updates["target_chat_ids"] = ",".join(str(c) for c in target_chat_ids)
+        if is_active is not None:
+            updates["is_active"] = is_active
+
+        if not updates:
+            return True
+
+        updates["updated_at"] = datetime.now(UTC).isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        async with self.db_manager.get_connection() as conn:
+            await conn.execute(
+                f"UPDATE scheduled_jobs SET {set_clause} WHERE job_id = ?",
+                (*updates.values(), job_id),
+            )
+            await conn.commit()
+
+        # Refresh APScheduler: remove old registration, re-add if now active
+        try:
+            self._scheduler.remove_job(job_id)
+        except Exception:
+            pass
+
+        updated_job = await self.get_job(job_id)  # None if inactive
+        if updated_job:
+            ttype = updated_job.get("trigger_type", "cron") or "cron"
+            cron_expr = updated_job.get("cron_expression", "")
+            run_date_str = updated_job.get("run_date")
+
+            if ttype == "cron":
+                ap_trigger = CronTrigger.from_crontab(cron_expr)
+            else:
+                ap_trigger = DateTrigger(run_date=run_date_str)
+
+            self._scheduler.add_job(
+                self._fire_event,
+                trigger=ap_trigger,
+                kwargs={
+                    "job_id": job_id,
+                    "job_name": updated_job["job_name"],
+                    "prompt": updated_job["prompt"],
+                    "working_directory": updated_job["working_directory"],
+                    "target_chat_ids": self._parse_chat_ids(
+                        updated_job.get("target_chat_ids", "")
+                    ),
+                    "skill_name": updated_job.get("skill_name"),
+                    "session_mode": updated_job.get("session_mode", "isolated"),
+                    "created_by": updated_job.get("created_by", 0),
+                    "cron_expression": cron_expr,
+                    "model": updated_job.get("model"),
+                    "max_turns": updated_job.get("max_turns"),
+                    "idle_timeout_seconds": updated_job.get("idle_timeout_seconds"),
+                },
+                id=job_id,
+                name=updated_job["job_name"],
+                replace_existing=True,
+            )
+            logger.info(
+                "Scheduled job updated",
+                job_id=job_id,
+                updated_fields=list(updates.keys()),
+            )
+
         return True
 
     async def record_job_run(
@@ -295,6 +441,9 @@ class JobScheduler:
         session_mode: str = "isolated",
         created_by: int = 0,
         cron_expression: str = "",
+        model: Optional[str] = None,
+        max_turns: Optional[int] = None,
+        idle_timeout_seconds: Optional[int] = None,
     ) -> None:
         """Called by APScheduler when a job triggers. Publishes a ScheduledEvent."""
         event = ScheduledEvent(
@@ -307,6 +456,9 @@ class JobScheduler:
             session_mode=session_mode,
             created_by=created_by,
             cron_expression=cron_expression,
+            model=model,
+            idle_timeout_seconds=idle_timeout_seconds,
+            max_turns=max_turns,
         )
 
         logger.info(
@@ -366,14 +518,6 @@ class JobScheduler:
                     else:
                         trigger = CronTrigger.from_crontab(cron_expr)
 
-                    # Parse target_chat_ids from stored string
-                    chat_ids_str = row_dict.get("target_chat_ids", "")
-                    chat_ids = (
-                        [int(x) for x in chat_ids_str.split(",") if x.strip()]
-                        if chat_ids_str
-                        else []
-                    )
-
                     self._scheduler.add_job(
                         self._fire_event,
                         trigger=trigger,
@@ -382,11 +526,18 @@ class JobScheduler:
                             "job_name": row_dict["job_name"],
                             "prompt": row_dict["prompt"],
                             "working_directory": row_dict["working_directory"],
-                            "target_chat_ids": chat_ids,
+                            "target_chat_ids": self._parse_chat_ids(
+                                row_dict.get("target_chat_ids", "")
+                            ),
                             "skill_name": row_dict.get("skill_name"),
                             "session_mode": row_dict.get("session_mode", "isolated"),
                             "created_by": row_dict.get("created_by", 0),
                             "cron_expression": cron_expr,
+                            "model": row_dict.get("model"),
+                            "max_turns": row_dict.get("max_turns"),
+                            "idle_timeout_seconds": row_dict.get(
+                                "idle_timeout_seconds"
+                            ),
                         },
                         id=row_dict["job_id"],
                         name=row_dict["job_name"],
@@ -423,6 +574,9 @@ class JobScheduler:
         session_mode: str = "isolated",
         trigger_type: str = "cron",
         run_date: Optional[str] = None,
+        model: Optional[str] = None,
+        max_turns: Optional[int] = None,
+        idle_timeout_seconds: Optional[int] = None,
     ) -> None:
         """Persist a job definition to the database."""
         chat_ids_str = ",".join(str(cid) for cid in target_chat_ids)
@@ -432,8 +586,9 @@ class JobScheduler:
                 INSERT OR REPLACE INTO scheduled_jobs
                 (job_id, job_name, cron_expression, prompt, target_chat_ids,
                  working_directory, skill_name, created_by, is_active,
-                 session_mode, trigger_type, run_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                 session_mode, trigger_type, run_date, model, max_turns,
+                 idle_timeout_seconds)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -447,6 +602,9 @@ class JobScheduler:
                     session_mode,
                     trigger_type,
                     run_date,
+                    model,
+                    max_turns,
+                    idle_timeout_seconds,
                 ),
             )
             await conn.commit()

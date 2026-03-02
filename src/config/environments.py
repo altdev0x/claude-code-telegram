@@ -10,7 +10,7 @@ class DevelopmentConfig:
     development_mode: bool = True
     log_level: str = "DEBUG"
     rate_limit_requests: int = 100  # More lenient for testing
-    claude_timeout_seconds: int = 600  # Longer timeout for debugging
+    claude_idle_timeout_seconds: int = 600  # Longer idle timeout for debugging
     enable_telemetry: bool = False
 
     @classmethod
@@ -33,7 +33,7 @@ class TestingConfig:
     database_url: str = "sqlite:///:memory:"
     approved_directory: str = "/tmp/test_projects"
     enable_telemetry: bool = False
-    claude_timeout_seconds: int = 30  # Faster timeout for tests
+    claude_idle_timeout_seconds: int = 30  # Faster idle timeout for tests
     rate_limit_requests: int = 1000  # No rate limiting in tests
     session_timeout_hours: int = 1  # Short session timeout for testing
 

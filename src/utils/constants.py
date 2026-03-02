@@ -5,7 +5,7 @@ APP_NAME = "Claude Code Telegram Bot"
 APP_DESCRIPTION = "Telegram bot for remote Claude Code access"
 
 # Default limits
-DEFAULT_CLAUDE_TIMEOUT_SECONDS = 600
+DEFAULT_CLAUDE_IDLE_TIMEOUT_SECONDS = 300
 DEFAULT_CLAUDE_MAX_TURNS = 25
 DEFAULT_CLAUDE_MAX_COST_PER_USER = 10.0
 
@@ -83,6 +83,13 @@ DEFAULT_BACKUP_RETENTION_DAYS = 30
 # Claude Code defaults
 DEFAULT_CLAUDE_BINARY = "claude"
 DEFAULT_CLAUDE_OUTPUT_FORMAT = "stream-json"
+
+# Supported Claude models (friendly name → model ID)
+MODEL_MAP = {
+    "sonnet": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-6",
+    "haiku": "claude-haiku-4-5-20251001",
+}
 
 # Logging
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

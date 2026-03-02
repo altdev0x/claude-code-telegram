@@ -26,6 +26,7 @@ class AddJobRequest(BaseModel):
     session_mode: str = "isolated"
     trigger_type: str = "cron"
     run_date: Optional[str] = None
+    model: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_trigger(self) -> "AddJobRequest":
@@ -37,6 +38,32 @@ class AddJobRequest(BaseModel):
         if self.trigger_type not in ("cron", "date"):
             raise ValueError(f"Invalid trigger_type: {self.trigger_type!r}")
         return self
+
+
+class UpdateJobRequest(BaseModel):
+    """Request body for patching an existing scheduled job.
+
+    All fields are optional — only provided fields are updated.
+    Send ``"model": null`` to clear a per-job model override.
+    """
+
+    job_name: Optional[str] = None
+    cron_expression: Optional[str] = None
+    run_date: Optional[str] = None
+    trigger_type: Optional[str] = None
+    prompt: Optional[str] = None
+    model: Optional[str] = None
+    session_mode: Optional[str] = None
+    working_directory: Optional[str] = None
+    target_chat_ids: Optional[List[int]] = None
+    is_active: Optional[bool] = None
+
+
+class UpdateJobResponse(BaseModel):
+    """Response after updating a job."""
+
+    job_id: str
+    status: str = "updated"
 
 
 class AddJobResponse(BaseModel):
@@ -109,6 +136,7 @@ def create_scheduler_router(
                 session_mode=request.session_mode,
                 trigger_type=request.trigger_type,
                 run_date=request.run_date,
+                model=request.model,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -146,6 +174,25 @@ def create_scheduler_router(
         """Remove a scheduled job and its execution history."""
         await job_scheduler.remove_job(job_id)
         return RemoveJobResponse(job_id=job_id)
+
+    @router.patch("/jobs/{job_id}", response_model=UpdateJobResponse)
+    async def update_job(
+        job_id: str,
+        request: UpdateJobRequest,
+        _: None = Depends(verify_token),
+    ) -> UpdateJobResponse:
+        """Update fields of an existing scheduled job."""
+        fields = request.model_dump(exclude_unset=True)
+        try:
+            await job_scheduler.update_job(job_id, **fields)
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("Failed to update job", job_id=job_id)
+            raise HTTPException(status_code=500, detail=str(e))
+        return UpdateJobResponse(job_id=job_id)
 
     @router.post("/jobs/{job_id}/trigger", response_model=TriggerJobResponse)
     async def trigger_job(
